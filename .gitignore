@@ -9,9 +9,8 @@ venv/
 # ===== 运行时产物 =====
 output/
 
-# ===== 敏感数据（个人登录态与持仓，禁止上传） =====
+# ===== 登录凭据（不建议入库，避免账号被冒用风险） =====
 cookies.json
-positions.json
 
 # ===== 本地临时 / 调试文件 =====
 _pyramid_preview.html
