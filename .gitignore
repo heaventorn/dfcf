@@ -1,0 +1,20 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ===== 运行时产物 =====
+output/
+
+# ===== 敏感数据（个人登录态与持仓，禁止上传） =====
+cookies.json
+positions.json
+
+# ===== 本地临时 / 调试文件 =====
+_pyramid_preview.html
+_probe_em.py
+_probe_tx.py
+*.bak
