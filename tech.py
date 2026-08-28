@@ -23,8 +23,7 @@ import pandas as pd
 import kchart
 import config
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ECHARTS_PATH = os.path.join(BASE_DIR, "assets", "echarts.min.js")
+ECHARTS_PATH = os.path.join(config.BASE_DIR, "assets", "echarts.min.js")
 
 # A股配色（红涨绿跌）
 RED = "#e64545"

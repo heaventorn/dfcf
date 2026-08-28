@@ -26,16 +26,14 @@
 
 分级：0-25 安全区 | 26-50 警戒区 | 51-75 高危区 | 76-100 爆破临界区
 
-输出：generate_report_section() 返回 HTML 内容片段，由 main.py 嵌入综合报告第二部分。
+输出：generate_report_section() 返回 HTML 内容片段，由 main.py 嵌入综合报告第三部分。
 """
 
-import os
 import re
 import time
 
-import requests
+from utils import http_get as _http_get
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_NAME = "罗力豪空中飞人指数"
 
 # ---------------------------------------------------------------- 固定权重
@@ -49,13 +47,6 @@ LEVELS = [
 ]
 
 # ---------------------------------------------------------------- 工具
-
-def _http_get(url, headers=None, timeout=12):
-    h = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    if headers:
-        h.update(headers)
-    return requests.get(url, headers=h, timeout=timeout)
-
 
 def _fred_rows(sid):
     """FRED 公开 CSV：返回 [(date, value), ...] 按时间升序（去重保留首个）。"""

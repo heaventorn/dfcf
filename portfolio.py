@@ -2,10 +2,10 @@
 """
 东方财富爬虫 - 个人组合监控模块
 
-根据「家庭投资组合」做每日监控，覆盖三类核心资产：
-  1) 低风险固收区（约 50% 仓位）：货币ETF / 国债ETF / 短债ETF / 国债逆回购
-  2) 红利低波区（约 25% 仓位）：红利 / 红利低波 ETF（详细股息率分析见 dividend.py）
-  3) 高成长权益区（约 25% 仓位）：国内高风险主动基金 + 纳指/标普 ETF
+根据「家庭投资组合」做每日监控，覆盖三类核心资产（占比见下方家庭资产金字塔）：
+  1) 低风险固收区（约 48%）：货币ETF / 国债ETF / 短债ETF / 国债逆回购
+  2) 红利低波区（约 30%）：红利 / 红利低波 ETF（详细股息率分析见 dividend.py）
+  3) 高成长权益区（约 20%）：国内高风险主动基金 + 纳指/标普 ETF
 
 数据源（走 sources.py 多源适配）：
   - 货币 / 债 / 逆回购：腾讯实时行情（get_realtime_quotes，新浪兜底）
@@ -25,8 +25,8 @@ import config
 import sources
 import tech
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+from config import BASE_DIR, OUTPUT_DIR
+from utils import to_float as _to_float, fmt_price as _fmt_price, fmt_pct as _fmt_pct
 
 
 POS_FILE = os.path.join(BASE_DIR, "positions.json")
@@ -137,13 +137,6 @@ def collect_high_risk():
     return {"funds": funds, "etfs": etfs}
 
 
-def _to_float(v):
-    try:
-        return float(v) if v is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 def collect_positions():
     """真实持仓监控：读 positions.json，拉实时价，计算市值/当日盈亏/持仓盈亏/收益率。"""
     pos = load_positions()
@@ -204,25 +197,6 @@ def collect_all():
 
 
 # ---------------------------------------------------------------- HTML 报告片段
-
-def _fmt_price(v, digits=2):
-    if v is None:
-        return "-"
-    try:
-        return f"{float(v):.{digits}f}"
-    except (TypeError, ValueError):
-        return "-"
-
-
-def _fmt_pct(v):
-    if v is None:
-        return "-"
-    try:
-        v = float(v)
-        return f"{v:+.2f}%"
-    except (TypeError, ValueError):
-        return "-"
-
 
 def _pct_cls(v):
     if v is None:
@@ -360,7 +334,7 @@ def _asset_pyramid_card():
 
 
 def generate_report_section(data, dividend_cards=""):
-    """生成个人组合监控的 HTML 内容片段（嵌入综合报告，第三部分）。
+    """生成个人组合监控的 HTML 内容片段（嵌入综合报告，第二部分）。
 
     dividend_cards: 红利/红利低波 ETF 追踪卡片的 HTML 片段
     （dividend.generate_cards 生成），作为本部分的「② 红利低波区」子区块嵌入。

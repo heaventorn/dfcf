@@ -66,7 +66,7 @@ def run(use_login=True):
     except Exception as e:
         print(f"[提示] 红利追踪分析未完成（{e}），个人组合监控将不含红利部分。")
 
-    # 4.1 罗力豪空中飞人指数（泡沫爆破风险指数，第二部分）
+    # 4.1 罗力豪空中飞人指数（泡沫爆破风险指数，第三部分）
     airman_section = ""
     try:
         import airman
@@ -74,7 +74,7 @@ def run(use_login=True):
     except Exception as e:
         print(f"[提示] 空中飞人指数计算未完成（{e}），综合报告将不含该部分。")
 
-    # 4.2 个人组合监控（第三部分，覆盖固收/逆回购/红利ETF追踪/美股高成长）
+    # 4.2 个人组合监控（第二部分，覆盖固收/逆回购/红利ETF追踪/美股高成长）
     portfolio_section = ""
     try:
         import portfolio

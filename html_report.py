@@ -12,6 +12,8 @@
 import time
 import kchart
 
+from utils import fmt_pct as _fmt_pct
+
 # ---------------------------------------------------------------- 工具函数
 
 def _fmt_amount(v):
@@ -27,13 +29,6 @@ def _fmt_amount(v):
     if v >= 1e4:
         return f"{v / 1e4:.0f}万"
     return f"{v:.0f}"
-
-
-def _fmt_pct(v):
-    try:
-        return f"{float(v):+.2f}%"
-    except (TypeError, ValueError):
-        return "-"
 
 
 def _sf(v):

@@ -21,9 +21,8 @@ import os
 import time
 
 import sources
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+from config import OUTPUT_DIR
+from utils import fmt_pct as _fmt_pct
 
 # ---------------------------------------------------------------- 标的配置
 ETF_CONFIG = [
@@ -300,12 +299,6 @@ thead th { background:#f7f0e8; color:#6b5a4a; font-weight:600; }
 footer { text-align:center; color:#9aa5b1; font-size:12px; margin-top:26px; line-height:1.8; }
 .hint { font-size:12px; color:#8a94a3; }
 """
-
-
-def _fmt_pct(v, signed=True):
-    if v is None:
-        return "-"
-    return f"{v:+.2f}%" if signed else f"{v:.2f}%"
 
 
 def _card_html(r):

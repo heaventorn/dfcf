@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 import config
+from utils import to_float as _to_float
 
 
 # ================================================================ 基础工具
@@ -53,16 +54,6 @@ class DataAnomaly(Exception):
 def _empty(msg):
     """软异常：内容为空/不足/结构不对（请求本身是成功的）。"""
     return DataAnomaly(msg, soft=True)
-
-
-def _to_float(v):
-    """安全转 float；空/停牌等非数值返回 None。"""
-    if v is None or v == "-":
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _mk_session(referer=None):
