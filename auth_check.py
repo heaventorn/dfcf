@@ -15,7 +15,11 @@ except Exception:
 
 # Argon2id 组合哈希 = Argon2("0762" + 强密码)，程序外一次性生成（16MB 内存档）
 ARGON2_HASH = "$argon2id$v=19$m=16384,t=2,p=1$e271hJRDAT/51KFNNb+YrQ$XYTVkcdfu8Ypeq4BFKC6hsQPpR3BsuX3EJXQs5aOd/I"
-PH = PasswordHasher(time_cost=2, memory_cost=16384, parallelism=1)
+
+if _ARGON2_OK:
+    PH = PasswordHasher(time_cost=2, memory_cost=16384, parallelism=1)
+else:
+    PH = None
 
 
 def _load_key():

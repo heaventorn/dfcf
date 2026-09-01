@@ -1,29 +1,28 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
 echo ============================================================
 echo   Eastmoney Daily Market Crawler
 echo ============================================================
 echo.
 
-REM ===== åŒå¯†ç éªŒè¯ï¼ˆè®¿é—®å¯†ç  + æœ¬åœ°pwd.keyäºŒçº§å¯†é’¥ï¼‰=====
-where python >nul 2>nul
+REM ===== Ë«ÃÜÂëÑéÖ¤£¨·ÃÎÊÃÜÂë + ±¾µØpwd.key¶þ¼¶ÃÜÔ¿£©=====
+where py >nul 2>nul
 if errorlevel 1 goto nopy
-python auth_check.py
+py -3.12 auth_check.py
 if errorlevel 1 (
-    echo [!] å¯†ç éªŒè¯å¤±è´¥æˆ–å·²å–æ¶ˆï¼Œç¨‹åºé€€å‡ºã€‚
+    echo [!] ÃÜÂëÑéÖ¤Ê§°Ü»òÒÑÈ¡Ïû£¬³ÌÐòÍË³ö¡£
     pause
     exit /b 1
 )
-echo [âˆš] åŒå¯†ç éªŒè¯é€šè¿‡ï¼Œå¼€å§‹è¿è¡Œ...
+echo [¡Ì] Ë«ÃÜÂëÑéÖ¤Í¨¹ý£¬¿ªÊ¼ÔËÐÐ...
 echo.
 
-where python >nul 2>nul
+where py >nul 2>nul
 if errorlevel 1 goto nopy
-python main.py
+py -3.12 main.py
 goto done
 :nopy
-echo [!] Python not found. Please install Python 3.10+.
+echo [!] Python launcher (py) not found. Please install Python 3.10+.
 :done
 echo.
 echo ============================================================
