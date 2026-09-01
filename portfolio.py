@@ -24,6 +24,7 @@ import requests
 import config
 import sources
 import tech
+import agents
 
 from config import BASE_DIR, OUTPUT_DIR
 from utils import to_float as _to_float, fmt_price as _fmt_price, fmt_pct as _fmt_pct
@@ -214,6 +215,53 @@ def _pct_cls(v):
 
 
 
+def _build_agent_button(it):
+    """生成多 Agent 辩论按钮（点击后浏览器端实时调用 DeepSeek API 分析）。
+    股票数据注入到 data 属性，避免浏览器跨域请求。"""
+    tx = it.get("tx", "")
+    name = it.get("name", "")
+    if not tx:
+        return ""
+    # 获取技术数据注入到 data 属性
+    data_attrs = f'data-tx="{tx}" data-name="{name}"'
+    cost = it.get("cost")
+    if cost:
+        data_attrs += f' data-cost="{cost}"'
+    try:
+        df = tech.fetch_kline(tx, 250)
+        if df is not None and len(df) >= 60:
+            df = tech.calc_indicators(df)
+            latest = df.iloc[-1]
+            price = round(float(latest["close"]), 2)
+            change_pct = round(float(latest["pct_chg"]), 2) if "pct_chg" in df.columns else 0
+            ma20 = round(float(latest["ma20"]), 2) if "ma20" in df.columns else 0
+            ma60 = round(float(latest["ma60"]), 2) if "ma60" in df.columns else 0
+            ma250 = round(float(latest["ma250"]), 2) if "ma250" in df.columns else 0
+            recent = df.tail(20)
+            high20 = round(float(recent["high"].max()), 2)
+            low20 = round(float(recent["low"].min()), 2)
+            price_60d = float(df.iloc[-60]["close"])
+            change60 = round((price - price_60d) / price_60d * 100, 2)
+            vol5 = float(df.tail(5)["volume"].mean())
+            vol20 = float(df.tail(20)["volume"].mean())
+            vol_ratio = round(vol5 / vol20, 2) if vol20 > 0 else 1
+            data_attrs += (f' data-price="{price}" data-change-pct="{change_pct}"'
+                           f' data-ma20="{ma20}" data-ma60="{ma60}" data-ma250="{ma250}"'
+                           f' data-high20="{high20}" data-low20="{low20}"'
+                           f' data-change60="{change60}" data-vol-ratio="{vol_ratio}"')
+    except Exception:
+        pass
+    return f'''
+  <div class="agent-block" {data_attrs} style="margin:12px 0;">
+    <button class="agent-btn" onclick="startAgentAnalysis(this)"
+      style="width:100%;padding:14px 18px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:all .2s;">
+      🤖 开始AGENT辩论 · {name}
+      <span style="font-weight:400;font-size:12px;opacity:.85;margin-left:8px;">点击后 7 位分析师实时辩论（约 1 分钟）</span>
+    </button>
+    <div class="agent-result" style="display:none;margin-top:12px;"></div>
+  </div>'''
+
+
 def generate_report_section(data, dividend_cards=""):
     """生成个人组合监控的 HTML 内容片段（嵌入综合报告，第二部分）。
 
@@ -240,10 +288,13 @@ def generate_report_section(data, dividend_cards=""):
                 f"<td style='text-align:left;color:#8a94a3;font-size:12px'>{it.get('note','')}</td></tr>"
             )
         tech_blocks = ""
+        agent_blocks = ""
         for _ti, it in enumerate(pos_items):
             _tc = it.get("tx") or ""
             if _tc:
                 tech_blocks += tech.build_tech_card(_tc, it["name"], embed_echarts=(_ti == 0))
+            # 多 Agent 辩论按钮（点击后浏览器端实时调用 DeepSeek API）
+            agent_blocks += _build_agent_button(it)
         pos_block = f'''
   <details class="card" open>
     <summary style="font-size:15px;font-weight:700;color:#1f2d3d;cursor:pointer;user-select:none;">⭐ 我的真实持仓 · 自动盯价 <a href="http://127.0.0.1:8765" target="_blank" style="font-size:12px;color:#3b82f6;text-decoration:none;margin-left:8px;">⚙️ 管理持仓（增删/买卖）</a> <span class="hint">持仓清单在 positions.json 自动维护，价格与盈亏每日自动计算；运行 position_manager.py 后可在浏览器在线增删买卖</span></summary>
@@ -259,7 +310,8 @@ def generate_report_section(data, dividend_cards=""):
         <tbody>{pos_rows}</tbody>
       </table>
       {tech_blocks}
-      <div class="hint">注：持仓清单来自 positions.json（代码/成本价/数量），当日盈亏按昨收计算；如需增删持仓直接编辑该文件即可。每只股票下方附交互式技术分析图（道氏 / 江恩 / 布林带选项卡切换）。</div>
+      {agent_blocks}
+      <div class="hint">注：持仓清单来自 positions.json（代码/成本价/数量），当日盈亏按昨收计算；如需增删持仓直接编辑该文件即可。每只股票下方附交互式技术分析图（道氏 / 江恩 / 布林带选项卡切换）和多Agent深度分析。</div>
     </div>
   </details>'''
     else:

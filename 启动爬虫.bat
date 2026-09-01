@@ -20,13 +20,18 @@ echo.
 where py >nul 2>nul
 if errorlevel 1 goto nopy
 py -3.12 main.py
+
+echo.
+echo ============================================================
+echo   爬虫完成，正在启动持仓管理服务...
+echo ============================================================
+echo.
+echo   访问地址: http://127.0.0.1:8765
+echo   关闭此窗口将停止持仓管理服务
+echo.
+py -3.12 position_manager.py
 goto done
 :nopy
 echo [!] Python launcher (py) not found. Please install Python 3.10+.
 :done
-echo.
-echo ============================================================
-echo   Done. You may close this window.
-echo   HTML report is in the "output" folder - open it in browser.
-echo ============================================================
 pause

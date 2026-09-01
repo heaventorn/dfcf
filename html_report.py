@@ -11,6 +11,7 @@
 
 import time
 import kchart
+import llm_config
 
 from utils import fmt_pct as _fmt_pct
 
@@ -295,6 +296,154 @@ def _legend(items):
 
 # ---------------------------------------------------------------- 主体
 
+AGENTS_JS = """
+<script>
+// ============ 多 Agent 辩论（浏览器端实时调用 DeepSeek API） ============
+const AGENT_ROLES = [
+  {key:'market', name:'市场分析师', icon:'📊', system:'你是一位 A 股市场技术分析专家，擅长 K线形态、均线系统、量价关系、趋势判断。请基于给出的技术数据，给出客观的技术面分析和多空判断。'},
+  {key:'social', name:'舆情分析师', icon:'💬', system:'你是一位 A 股市场情绪与舆情分析专家，擅长判断散户情绪、市场热度、资金关注度。请基于给出的数据和当前市场环境，分析该股的舆情面和情绪面。'},
+  {key:'news', name:'新闻分析师', icon:'📰', system:'你是一位 A 股新闻与事件驱动分析专家，擅长从行业新闻、公司公告、宏观事件中挖掘对个股的影响。请基于给出的信息，分析近期可能影响该股的新闻和事件。'},
+  {key:'fundamentals', name:'基本面分析师', icon:'📈', system:'你是一位 A 股基本面分析专家，擅长财务分析、盈利能力评估、估值判断、行业地位分析。请基于给出的数据，分析该股的基本面状况和估值水平。'},
+  {key:'policy', name:'政策分析师', icon:'🏛️', system:'你是一位 A 股政策分析专家，擅长判断监管政策、产业政策、窗口指导对个股和板块的影响。A 股是政策市，请重点分析政策面对该股的影响。'},
+  {key:'hot_money', name:'游资追踪师', icon:'🔥', system:'你是一位 A 股游资与资金流向分析专家，擅长追踪龙虎榜、大单流向、主力资金动态。游资是 A 股短线定价的核心力量，请分析该股的资金面和游资参与度。'},
+  {key:'lockup', name:'解禁监控师', icon:'🔓', system:'你是一位 A 股限售股解禁与减持监控专家，擅长分析限售股解禁、大股东减持、股权质押对股价的供给冲击。解禁是 A 股特有的重大供给冲击因素，请分析该股的解禁与减持风险。'}
+];
+const RATING_STYLE = {
+  BUY:{color:'#e74c3c',bg:'#fdecea',label:'买入 BUY',icon:'🟢'},
+  HOLD:{color:'#f39c12',bg:'#fef5e7',label:'持有 HOLD',icon:'🟡'},
+  SELL:{color:'#27ae60',bg:'#eafaf1',label:'卖出 SELL',icon:'🔴'}
+};
+async function agentChat(systemPrompt,userPrompt,temperature){
+  temperature = temperature || 0.7;
+  const resp = await fetch('https://api.deepseek.com/chat/completions',{
+    method:'POST',
+    headers:{'Authorization':'Bearer '+DEEPSEEK_API_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:'deepseek-chat',
+      messages:[{role:'system',content:systemPrompt},{role:'user',content:userPrompt}],
+      temperature:temperature,max_tokens:4096
+    })
+  });
+  const data = await resp.json();
+  if(data.choices && data.choices[0]) return data.choices[0].message.content;
+  return '[API错误]';
+}
+function buildDataBrief(block){
+  const d = block.dataset;
+  let lines = ['股票: '+d.name+'('+d.tx+')','日期: '+new Date().toISOString().slice(0,10)];
+  if(d.price) lines.push('现价: '+d.price+'  涨跌幅: '+d.changePct+'%');
+  if(d.cost && d.price){
+    const pnlPct = ((parseFloat(d.price)-parseFloat(d.cost))/parseFloat(d.cost)*100).toFixed(2);
+    lines.push('持仓成本: '+d.cost+'  持仓盈亏: '+pnlPct+'%');
+  }
+  if(d.ma20) lines.push('MA20: '+d.ma20+'  MA60: '+d.ma60+'  MA250: '+d.ma250);
+  if(d.high20) lines.push('20日最高: '+d.high20+'  20日最低: '+d.low20);
+  if(d.change60) lines.push('60日涨跌幅: '+d.change60+'%');
+  if(d.volRatio) lines.push('5日/20日量比: '+d.volRatio);
+  return lines.join('\\n');
+}
+async function runAnalyst(role,dataBrief,progressEl){
+  progressEl.textContent = '  ['+role.index+'/7] '+role.icon+role.name+' 分析中...';
+  const userPrompt = '请分析以下股票数据，给出你的专业判断。要求：\\n1. 先给出你的核心结论（看多/看空/中性）\\n2. 然后给出 3-5 条具体分析依据\\n3. 最后给出风险提示\\n4. 总字数控制在 300 字以内，语言精炼专业\\n\\n'+dataBrief;
+  const report = await agentChat(role.system,userPrompt,0.7);
+  return {key:role.key,name:role.name,icon:role.icon,report:report};
+}
+async function bullBearDebate(analystReports,dataBrief,progressEl){
+  progressEl.textContent = '  ⚖️ 多空辩论中...';
+  let reportsText = analystReports.map(function(r){return '【'+r.icon+r.name+'】\\n'+r.report;}).join('\\n\\n');
+  const system = '你是一位资深的 A 股投资辩论主持人，需要整合 7 位分析师的报告，组织一场多空辩论。请分别总结多方观点和空方观点，然后给出辩论后的倾向性判断。';
+  const userPrompt = '以下是 7 位分析师对同一只股票的分析报告：\\n\\n'+reportsText+'\\n\\n'+dataBrief+'\\n\\n请输出：\\n1. 【多方核心观点】（3条以内）\\n2. 【空方核心观点】（3条以内）\\n3. 【辩论结论】（多方占优/空方占优/势均力敌，一句话说明理由）\\n总字数控制在 400 字以内。';
+  return await agentChat(system,userPrompt,0.6);
+}
+async function finalDecision(analystReports,debate,dataBrief,progressEl){
+  progressEl.textContent = '  🎯 最终决策中...';
+  let reportsText = analystReports.map(function(r){return '- '+r.icon+r.name+': '+r.report.slice(0,100)+'...';}).join('\\n');
+  const system = '你是一位经验丰富的 A 股投资组合经理，需要综合 7 位分析师报告和多空辩论结果，给出最终投资评级、目标价区间和止损位。评级分为：买入(BUY)、持有(HOLD)、卖出(SELL)三档。目标价基于技术面支撑阻力位和基本面估值给出乐观/中性/悲观三档，止损位基于关键技术支撑位给出。';
+  const userPrompt = '股票数据：\\n'+dataBrief+'\\n\\n分析师报告摘要：\\n'+reportsText+'\\n\\n多空辩论结果：\\n'+debate+'\\n\\n请输出严格的 JSON 格式（不要输出其他内容）：\\n{\\n  "rating": "BUY" 或 "HOLD" 或 "SELL",\\n  "confidence": "高" 或 "中" 或 "低",\\n  "one_liner": "一句话理由（50字以内）",\\n  "key_reasons": ["理由1","理由2","理由3"],\\n  "risk_warning": "主要风险提示（30字以内）",\\n  "target_optimistic": "乐观目标价（数字）",\\n  "target_base": "中性目标价（数字）",\\n  "target_pessimistic": "悲观目标价（数字）",\\n  "stop_loss": "止损位（数字）",\\n  "target_logic": "目标价推导逻辑（30字以内）"\\n}';
+  const result = await agentChat(system,userPrompt,0.3);
+  try{
+    const start = result.indexOf('{');
+    const end = result.lastIndexOf('}')+1;
+    if(start>=0 && end>start) return JSON.parse(result.slice(start,end));
+  }catch(e){}
+  return {rating:'HOLD',confidence:'低',one_liner:'多空因素交织，建议观望',key_reasons:['分析师观点分歧较大'],risk_warning:'市场不确定性较高',target_optimistic:'',target_base:'',target_pessimistic:'',stop_loss:'',target_logic:''};
+}
+function renderAgentResult(resultEl,result){
+  const style = RATING_STYLE[result.rating] || RATING_STYLE.HOLD;
+  let analystHtml = result.analyst_reports.map(function(r){
+    return '<div style="margin:8px 0;padding:10px 14px;background:#f8f9fa;border-radius:6px;border-left:3px solid #4a6cf7;">'+
+      '<div style="font-weight:600;color:#2c3e50;margin-bottom:4px;">'+r.icon+' '+r.name+'</div>'+
+      '<div style="font-size:12px;color:#555;line-height:1.6;white-space:pre-wrap;">'+r.report+'</div></div>';
+  }).join('');
+  let reasonsHtml = result.key_reasons.map(function(r){return '<li>'+r+'</li>';}).join('');
+  resultEl.innerHTML =
+    '<details class="card agent-card" open style="margin:0;border:1px solid #e1e8ed;border-radius:8px;overflow:hidden;">'+
+    '<summary style="cursor:pointer;padding:14px 18px;background:linear-gradient(135deg,'+style.bg+',#fff);font-weight:600;font-size:15px;list-style:none;">'+
+    '<span style="font-size:18px;margin-right:8px;">🤖</span>多Agent深度分析'+
+    '<span style="float:right;padding:3px 12px;border-radius:12px;background:'+style.color+';color:#fff;font-size:12px;font-weight:500;">'+
+    style.icon+' '+style.label+' · 置信度'+result.confidence+'</span>'+
+    '<div style="font-weight:400;font-size:13px;color:#666;margin-top:4px;">'+result.one_liner+'</div></summary>'+
+    '<div style="padding:16px 18px;background:#fff;">'+
+    '<div style="margin-bottom:14px;padding:12px 16px;background:'+style.bg+';border-radius:6px;">'+
+    '<div style="font-weight:600;color:'+style.color+';margin-bottom:6px;">核心逻辑</div>'+
+    '<ul style="margin:0;padding-left:20px;font-size:13px;color:#444;line-height:1.7;">'+reasonsHtml+'</ul>'+
+    '<div style="margin-top:8px;font-size:12px;color:#888;">⚠️ '+result.risk_warning+'</div></div>'+
+    (result.target_base ? '<div style="margin-bottom:14px;padding:12px 16px;background:#f0f4ff;border-radius:6px;">'+
+      '<div style="font-weight:600;color:#2c3e50;margin-bottom:8px;">🎯 目标价与止损位</div>'+
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">'+
+        '<div style="flex:1;min-width:80px;text-align:center;padding:8px 4px;background:#eafaf1;border-radius:4px;"><div style="font-size:11px;color:#27ae60;">乐观目标</div><div style="font-size:17px;font-weight:700;color:#27ae60;">'+result.target_optimistic+'</div></div>'+
+        '<div style="flex:1;min-width:80px;text-align:center;padding:8px 4px;background:#fef9e7;border-radius:4px;"><div style="font-size:11px;color:#f39c12;">中性目标</div><div style="font-size:17px;font-weight:700;color:#f39c12;">'+result.target_base+'</div></div>'+
+        '<div style="flex:1;min-width:80px;text-align:center;padding:8px 4px;background:#fdecea;border-radius:4px;"><div style="font-size:11px;color:#e74c3c;">悲观目标</div><div style="font-size:17px;font-weight:700;color:#e74c3c;">'+result.target_pessimistic+'</div></div>'+
+        '<div style="flex:1;min-width:80px;text-align:center;padding:8px 4px;background:#f5f5f5;border-radius:4px;"><div style="font-size:11px;color:#7f8c8d;">止损位</div><div style="font-size:17px;font-weight:700;color:#7f8c8d;">'+result.stop_loss+'</div></div>'+
+      '</div>'+
+      (result.target_logic ? '<div style="font-size:12px;color:#888;">📐 '+result.target_logic+'</div>' : '')+
+    '</div>' : '')+
+    '<div style="margin-bottom:14px;"><div style="font-weight:600;color:#2c3e50;margin-bottom:8px;font-size:14px;">⚖️ 多空辩论</div>'+
+    '<div style="font-size:12px;color:#555;line-height:1.7;padding:10px 14px;background:#f8f9fa;border-radius:6px;white-space:pre-wrap;">'+result.debate+'</div></div>'+
+    '<div><div style="font-weight:600;color:#2c3e50;margin-bottom:8px;font-size:14px;">👥 7 位分析师完整报告</div>'+analystHtml+'</div>'+
+    '</div></details>';
+  resultEl.style.display = 'block';
+}
+async function startAgentAnalysis(btn){
+  const block = btn.parentElement;
+  const resultEl = block.querySelector('.agent-result');
+  if(!DEEPSEEK_API_KEY){
+    resultEl.innerHTML = '<div style="padding:12px;color:#c0392b;font-size:13px;">⚠️ 未配置 DEEPSEEK_API_KEY，请在 .env 文件中配置后重新生成报告。</div>';
+    resultEl.style.display = 'block'; return;
+  }
+  btn.disabled = true;
+  btn.style.opacity = '0.7';
+  btn.style.cursor = 'not-allowed';
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:14px;line-height:2;">'+
+    '<div style="font-size:24px;margin-bottom:8px;">🤖</div>'+
+    '<div>多 Agent 辩论进行中...</div>'+
+    '<div style="font-size:12px;color:#999;" id="agent-progress-detail">正在初始化...</div></div>';
+  const progressDetail = document.getElementById('agent-progress-detail');
+  const dataBrief = buildDataBrief(block);
+  try{
+    const analystReports = [];
+    for(let i=0;i<AGENT_ROLES.length;i++){
+      const role = Object.assign({},AGENT_ROLES[i],{index:i+1});
+      const report = await runAnalyst(role,dataBrief,progressDetail);
+      analystReports.push(report);
+    }
+    const debate = await bullBearDebate(analystReports,dataBrief,progressDetail);
+    const decision = await finalDecision(analystReports,debate,dataBrief,progressDetail);
+    const result = Object.assign({},decision,{analyst_reports:analystReports,debate:debate});
+    renderAgentResult(resultEl,result);
+    btn.style.display = 'none';
+  }catch(e){
+    resultEl.innerHTML = '<div style="padding:12px;color:#c0392b;font-size:13px;">⚠️ 分析失败: '+e.message+'</div>';
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.cursor = 'pointer';
+  }
+}
+</script>
+"""
+
+
 def generate_html_report(data, dividend_section="", airman_section="", portfolio_section=""):
     """生成完整的 HTML 报告字符串。
 
@@ -366,6 +515,7 @@ def generate_html_report(data, dividend_section="", airman_section="", portfolio
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>大盘与泡沫报告</title>
 <style>{CSS}</style>
+<script>const DEEPSEEK_API_KEY="{llm_config.DEEPSEEK_API_KEY}";</script>
 </head>
 <body>
 <div class="wrap">
@@ -459,6 +609,7 @@ def generate_html_report(data, dividend_section="", airman_section="", portfolio
   </footer>
 
 </div>
+{AGENTS_JS}
 </body>
 </html>"""
     return html
