@@ -2,7 +2,7 @@
 """
 东方财富爬虫 - 个人组合监控模块
 
-根据「家庭投资组合」做每日监控，覆盖三类核心资产（占比见下方家庭资产金字塔）：
+根据「家庭投资组合」做每日监控，覆盖三类核心资产：
   1) 低风险固收区（约 48%）：货币ETF / 国债ETF / 短债ETF / 国债逆回购
   2) 红利低波区（约 30%）：红利 / 红利低波 ETF（详细股息率分析见 dividend.py）
   3) 高成长权益区（约 20%）：国内高风险主动基金 + 纳指/标普 ETF
@@ -211,125 +211,6 @@ def _pct_cls(v):
 
 
 
-def _asset_pyramid_svg():
-    """家庭资产配置金字塔：标准等腰轮廓，高度按目标占比分配（直观体现资金量），
-    颜色从底部绿色到顶部红色整体渐变；薄层放不下文字时通过悬浮窗（JS tooltip）展示。
-
-    从底部（最安全）到顶部（风险最高）：
-      ① 现金 ≈2%（细条，悬浮窗）→ ② 稳健固收 48%（最厚）→ ③ 红利/REITs 30% → ④ 高风险主动基金 20%。
-    """
-    W, H = 860, 500
-    top, bottom = 60.0, 452.0          # 金字塔纵向范围（总高 392）
-    PH = bottom - top
-    cx = W / 2.0
-    bottom_half = 380.0                # 底部半宽
-    top_half = 18.0                    # 顶部窄顶边半宽
-
-    layers = [
-        # (层名, 占比, 品种行, tooltip, 层内显示文字)
-        ("① 现金层", "≈2%", ["现金 / 存款"],
-         "① 现金层 · 目标 ≈2%：现金 / 存款，保底资金，流动性最强、最安全。", False),
-        ("② 稳健固收", "48%", ["国债ETF · 短债ETF · 逆回购"],
-         "② 稳健固收 · 目标 48%：国债ETF / 短债ETF / 国债逆回购，家庭配置核心底仓，波动低、回撤小。", True),
-        ("③ 红利 / REITs", "30%", ["红利ETF(华泰柏瑞)·红利低波ETF", "REITs（未来考虑）"],
-         "③ 红利 / REITs · 目标 30%：红利ETF（华泰柏瑞，已配置）· 红利低波ETF（计划）· REITs（可能考虑），攻守兼备的生息资产。", True),
-        ("④ 高风险主动基金", "20%", ["高收益高风险主动基金"],
-         "④ 高风险主动基金 · 目标 20%：各类高收益高风险主动基金，博取超额收益，波动较大。", True),
-    ]
-    pcts = [2, 48, 30, 20]
-    assert sum(pcts) == 100
-
-    def half_w(y):
-        return top_half + (bottom_half - top_half) * (y - top) / PH
-
-    parts = [f'<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" '
-             f'style="width:100%;max-width:{W}px;height:auto;display:block;margin:0 auto;">']
-    # 整体渐变：底部绿 → 顶部红（不是每块独立颜色）
-    parts.append(
-        f'<defs><linearGradient id="pyrGrad" x1="0" y1="{bottom}" x2="0" y2="{top}" gradientUnits="userSpaceOnUse">'
-        f'<stop offset="0%" stop-color="#12a15d"/>'
-        f'<stop offset="55%" stop-color="#e8b23a"/>'
-        f'<stop offset="100%" stop-color="#e64545"/></linearGradient></defs>'
-    )
-    parts.append(f'<text x="{cx}" y="44" text-anchor="middle" font-size="12" '
-                 f'font-weight="700" fill="#e64545">▲ 高风险</text>')
-    parts.append(f'<text x="{cx}" y="{bottom + 22}" text-anchor="middle" font-size="12" '
-                 f'font-weight="700" fill="#12a15d">低风险 · 安全垫 ▼</text>')
-
-    y = bottom
-    for i, (name, pct, prods, tip, show) in enumerate(layers):
-        y_lo = y
-        y_hi = y - PH * pcts[i] / 100.0
-        y = y_hi
-        w_lo = half_w(y_lo)
-        w_hi = half_w(y_hi)
-        pts = (f"{cx - w_lo:.1f},{y_lo:.1f} {cx + w_lo:.1f},{y_lo:.1f} "
-               f"{cx + w_hi:.1f},{y_hi:.1f} {cx - w_hi:.1f},{y_hi:.1f}")
-        parts.append(f'<polygon points="{pts}" fill="url(#pyrGrad)" stroke="#ffffff" stroke-width="2" '
-                     f'data-tip="{tip}"/>')
-        if not show:
-            continue
-        y_mid = (y_lo + y_hi) / 2
-        hh = y_lo - y_hi
-        if hh >= 150:      # 固收层（最厚）：层名 + 占比 + 品种
-            parts.append(f'<text x="{cx}" y="{y_mid - 20:.1f}" text-anchor="middle" font-size="15.5" '
-                         f'font-weight="700" fill="#ffffff" stroke="#1f2d3d" stroke-width="2" paint-order="stroke">{name}</text>')
-            parts.append(f'<text x="{cx}" y="{y_mid + 2:.1f}" text-anchor="middle" font-size="14.5" '
-                         f'font-weight="700" fill="#ffffff" stroke="#1f2d3d" stroke-width="2" paint-order="stroke">{pct}</text>')
-            for k, line in enumerate(prods):
-                parts.append(f'<text x="{cx}" y="{y_mid + 24 + k * 14:.1f}" text-anchor="middle" '
-                             f'font-size="11.5" fill="#ffffff" stroke="#1f2d3d" stroke-width="1.5" paint-order="stroke">{line}</text>')
-        elif hh >= 100:   # 红利层：层名 + 占比 + 品种两行
-            parts.append(f'<text x="{cx}" y="{y_mid - 22:.1f}" text-anchor="middle" font-size="13" '
-                         f'font-weight="700" fill="#ffffff" stroke="#1f2d3d" stroke-width="2" paint-order="stroke">{name}</text>')
-            parts.append(f'<text x="{cx}" y="{y_mid - 4:.1f}" text-anchor="middle" font-size="12.5" '
-                         f'font-weight="700" fill="#ffffff" stroke="#1f2d3d" stroke-width="2" paint-order="stroke">{pct}</text>')
-            for k, line in enumerate(prods):
-                parts.append(f'<text x="{cx}" y="{y_mid + 12 + k * 13:.1f}" text-anchor="middle" '
-                             f'font-size="10.5" fill="#ffffff" stroke="#1f2d3d" stroke-width="1.5" paint-order="stroke">{line}</text>')
-        else:             # 主动层：仅层名 + 占比
-            parts.append(f'<text x="{cx}" y="{y_mid - 8:.1f}" text-anchor="middle" font-size="11.5" '
-                         f'font-weight="700" fill="#ffffff" stroke="#1f2d3d" stroke-width="2" paint-order="stroke">{name}</text>')
-            parts.append(f'<text x="{cx}" y="{y_mid + 10:.1f}" text-anchor="middle" font-size="11" '
-                         f'font-weight="700" fill="#ffffff" stroke="#1f2d3d" stroke-width="2" paint-order="stroke">{pct}</text>')
-    parts.append('</svg>')
-    return "".join(parts)
-
-
-def _asset_pyramid_card():
-    """家庭资产金字塔卡片（静态配置全景图），嵌入第二部分·个人组合监控。
-    悬浮窗：鼠标移到金字塔各层时自动显示该层详情（HTML/CSS/JS 自定义 tooltip，兼容应用内浏览器）。
-    """
-    svg = _asset_pyramid_svg()
-    return (
-        '<div class="card" style="margin-top:12px;">'
-        '<div style="font-size:15px;font-weight:700;color:#1f2d3d;margin-bottom:8px;">家庭资产金字塔 · 配置全景</div>'
-        f'<div id="pyrBox" style="position:relative;overflow-x:auto;">{svg}</div>'
-        '<div id="pyrTip" style="position:fixed;display:none;pointer-events:none;background:#1f2d3d;color:#fff;'
-        'font-size:12px;line-height:1.7;padding:9px 12px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.28);'
-        'max-width:280px;z-index:999;"></div>'
-        '<div class="hint" style="margin-top:6px;line-height:1.8;">'
-        '越往下越安全、越往上风险越高：① 现金 ≈2%（保底）→ ② 稳健固收 48%（国债ETF/短债ETF/逆回购）→ '
-        '③ 红利/REITs 30%（红利ETF·华泰柏瑞已配置；红利低波ETF、REITs 为未来计划）→ '
-        '④ 高风险主动基金 20%（高收益高风险主动基金）。数字为目标配置占比，仅供参考，不构成投资建议。</div>'
-        '<script>'
-        '(function(){'
-        'var box=document.getElementById("pyrBox");var tip=document.getElementById("pyrTip");'
-        'if(!box||!tip)return;'
-        'var ps=box.querySelectorAll("polygon[data-tip]");'
-        'function show(t,ev){tip.textContent=t;tip.style.display="block";'
-        'var x=ev.clientX+14,y=ev.clientY+14;var tw=tip.offsetWidth,th=tip.offsetHeight;'
-        'if(x+tw>window.innerWidth-8)x=ev.clientX-tw-12;'
-        'if(y+th>window.innerHeight-8)y=ev.clientY-th-12;'
-        'tip.style.left=x+"px";tip.style.top=y+"px";}'
-        'function hide(){tip.style.display="none";}'
-        'for(var i=0;i<ps.length;i++){(function(p){'
-        'p.addEventListener("mousemove",function(ev){show(p.getAttribute("data-tip"),ev);});'
-        'p.addEventListener("mouseleave",hide);})(ps[i]);}'
-        '})();'
-        '</script>'
-        '</div>'
-    )
 
 
 
@@ -339,7 +220,6 @@ def generate_report_section(data, dividend_cards=""):
     dividend_cards: 红利/红利低波 ETF 追踪卡片的 HTML 片段
     （dividend.generate_cards 生成），作为本部分的「② 红利低波区」子区块嵌入。
     """
-    pyramid_html = _asset_pyramid_card()
 
     fi = (data or {}).get("fixed_income") or {}
     hr = (data or {}).get("high_risk") or {}
@@ -366,7 +246,7 @@ def generate_report_section(data, dividend_cards=""):
                 tech_blocks += tech.build_tech_card(_tc, it["name"], embed_echarts=(_ti == 0))
         pos_block = f'''
   <details class="card" open>
-    <summary style="font-size:15px;font-weight:700;color:#1f2d3d;cursor:pointer;user-select:none;">⭐ 我的真实持仓 · 自动盯价 <span class="hint">持仓清单在 positions.json 手动维护，价格与盈亏每日自动计算</span></summary>
+    <summary style="font-size:15px;font-weight:700;color:#1f2d3d;cursor:pointer;user-select:none;">⭐ 我的真实持仓 · 自动盯价 <a href="http://127.0.0.1:8765" target="_blank" style="font-size:12px;color:#3b82f6;text-decoration:none;margin-left:8px;">⚙️ 管理持仓（增删/买卖）</a> <span class="hint">持仓清单在 positions.json 自动维护，价格与盈亏每日自动计算；运行 position_manager.py 后可在浏览器在线增删买卖</span></summary>
     <div style="margin-top:12px;">
       <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px;font-size:13px;color:#4a5568;">
         <span>证券市值 <b>{_fmt_price(pos.get('total_mv'))}</b></span>
@@ -438,14 +318,13 @@ def generate_report_section(data, dividend_cards=""):
   <section class="card divider">
     <h2>第二部分 · 个人组合监控</h2>
     <div style="font-size:13px;color:#4a5568;line-height:2;">
-      按家庭组合做每日盯盘，目标配置见下方金字塔：<b>现金≈2% / 稳健固收48% / 红利·REITs 30% / 高风险主动基金20%</b>，<b>点击各类标题展开/收起明细</b>：
+      按家庭组合做每日盯盘，目标配置：<b>现金≈2% / 稳健固收48% / 红利·REITs 30% / 高风险主动基金20%</b>，<b>点击各类标题展开/收起明细</b>：
       <b>① 低风险固收（约48%）</b>：货币ETF / 国债ETF / 短债ETF / 国债逆回购；
       <b>② 红利低波（约30%）</b>：股息率详表；
       <b>③ 高风险主动基金 + 纳指ETF（约20%）</b>：国内主动基金 / 纳指 / 标普 ETF。
       行情仅供个人参考，不构成投资建议。
     </div>
   </section>
-{pyramid_html}
 {pos_block}
   <details class="card">
     <summary style="font-size:15px;font-weight:700;color:#1f2d3d;cursor:pointer;user-select:none;">① 低风险固收区（约48%）· 货币ETF / 国债ETF / 短债ETF / 国债逆回购　<span class="hint">点击展开</span></summary>

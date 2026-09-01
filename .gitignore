@@ -17,3 +17,5 @@ _pyramid_preview.html
 _probe_em.py
 _probe_tx.py
 *.bak
+# 本地密钥文件（含二级密码哈希，绝不上传公开仓库）
+pwd.key
