@@ -1,0 +1,7 @@
+# 统一换行:源码 LF,.bat CRLF,图片按二进制处理
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.geojson -text

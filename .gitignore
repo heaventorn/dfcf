@@ -22,3 +22,16 @@ pwd.key
 
 # LLM API Key
 .env
+
+
+# 工具机 / 编辑器
+.reasonix/
+.vscode/
+# 误生成的空文件
+0
+0.5
+# 预览页(由 events.py 生成,不入库)
+events_live.html
+# 已弃用的大贴图:云层/昼夜效果已移除(本地保留,不入库)
+assets/earth8k_clouds.jpg
+assets/earth8k_night.jpg

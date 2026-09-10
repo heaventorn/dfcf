@@ -1,12 +1,3 @@
 {
-  "positions": [
-    {
-      "tx": "sz000519",
-      "code": "000519",
-      "name": "中兵红箭",
-      "cost": 14.84,
-      "shares": 100,
-      "note": "军工·特种装备"
-    }
-  ]
+  "positions": []
 }

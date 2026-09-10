@@ -83,9 +83,9 @@ header.title { text-align:center; padding:26px 20px; background:linear-gradient(
                color:#fff; border-radius:14px; box-shadow:0 6px 18px rgba(31,45,61,.18); }
 header.title h1 { font-size:24px; letter-spacing:1px; }
 header.title .sub { margin-top:8px; font-size:13px; opacity:.85; }
-.card { background:CARD; border-radius:12px; padding:22px 24px; margin-top:20px;
+.card { background:#ffffff; border-radius:12px; padding:22px 24px; margin-top:20px;
         box-shadow:0 2px 8px rgba(31,45,61,.08); }
-.card h2 { font-size:17px; color:DARK; border-left:4px solid BLUE; padding-left:10px; margin-bottom:16px; }
+.card h2 { font-size:17px; color:#1f2d3d; border-left:4px solid #2563eb; padding-left:10px; margin-bottom:16px; }
 .hint { font-size:12px; color:#8a94a3; margin-top:4px; }
 
 /* 一句话点评 */
@@ -102,9 +102,9 @@ th,td { padding:10px 12px; text-align:center; }
 thead th { background:#f1f4f9; color:#5a6573; font-weight:600; }
 tbody tr { border-bottom:1px solid #eef1f6; }
 tbody tr:hover { background:#f8fafc; }
-.pos { color:RED; font-weight:600; }
-.neg { color:GREEN; font-weight:600; }
-.flat{ color:GRAY; }
+.pos { color:#e64545; font-weight:600; }
+.neg { color:#12a15d; font-weight:600; }
+.flat{ color:#9aa5b1; }
 
 /* 横向条形图 */
 .hbar { display:flex; align-items:center; margin:9px 0; }
@@ -444,7 +444,7 @@ async function startAgentAnalysis(btn){
 """
 
 
-def generate_html_report(data, dividend_section="", airman_section="", portfolio_section=""):
+def generate_html_report(data, dividend_section="", airman_section="", portfolio_section="", include_charts=True):
     """生成完整的 HTML 报告字符串。
 
     dividend_section: 红利追踪分析的 HTML 内容片段（dividend.generate_report_section）。
@@ -503,10 +503,13 @@ def generate_html_report(data, dividend_section="", airman_section="", portfolio
         )
 
     # ---- 主板（上证指数）分时 + 日K图 ----
-    try:
-        kchart_section = kchart.generate_index_chart_section()
-    except Exception:
-        kchart_section = ""
+    if include_charts:
+        try:
+            kchart_section = kchart.generate_index_chart_section()
+        except Exception:
+            kchart_section = ""
+    else:
+        kchart_section = ""  # 主页用 lightweight-charts 交互图,不再需要静态 PNG
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">

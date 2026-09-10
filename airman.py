@@ -596,11 +596,20 @@ def compute_index(raw):
 
 # ---------------------------------------------------------------- HTML 片段
 
-def generate_report_section():
-    """生成「罗力豪空中飞人指数」HTML 内容片段（综合报告第二部分）。"""
-    raw = collect_all()
-    res = compute_index(raw)
-    refs = collect_reference(raw)
+def generate_report_section(result=None, refs=None, detail_link=None):
+    """生成「罗力豪空中飞人指数」HTML 内容片段（综合报告第三部分）。
+
+    result/refs 可传入已采集计算好的结果（避免重复抓取）；为 None 时自行采集。
+    detail_link 非 None 时，在摘要卡下方附加「3D 全球事件地图」跳转按钮。
+    """
+    if result is None or refs is None:
+        raw = collect_all()
+        result = compute_index(raw)
+        refs = collect_reference(raw)
+    return _render_section(result, refs, detail_link)
+
+
+def _render_section(res, refs, detail_link=None):
     total = res["total"]
     lv = res["level_name"]
     lc = res["level_color"]
@@ -668,6 +677,17 @@ def generate_report_section():
 
     miss_note = f'　|　<span class="hint">其中 {n_miss} 项数据获取失败未计分</span>' if n_miss else ""
 
+    globe_btn = ""
+    if detail_link:
+        globe_btn = (f'<div style="margin-top:14px;padding:14px 16px;border:1px solid #e1e8ed;border-radius:8px;'
+                     f'background:linear-gradient(135deg,#f7f9fc,#fff);display:flex;align-items:center;'
+                     f'justify-content:space-between;gap:14px;flex-wrap:wrap;">'
+                     f'<div><div style="font-weight:700;color:#1f2d3d;font-size:14px;">3D 全球事件地图</div>'
+                     f'<div class="hint" style="font-size:12px;">近 24 小时全球财经 / 地缘事件落点（数据源：东财 7x24 快讯）</div></div>'
+                     f'<a href="{detail_link}" target="_blank" style="flex:0 0 auto;padding:10px 22px;border-radius:8px;'
+                     f'background:#1f2d3d;color:#fff;font-weight:600;text-decoration:none;font-size:14px;">'
+                     f'🌍 打开 3D 地图</a></div>')
+
     section = f"""
   <!-- 第三部分：罗力豪空中飞人指数 -->
   <section class="card divider">
@@ -677,6 +697,7 @@ def generate_report_section():
       评分标准固定，全部指标由公开数据自动采集、按固定阈值打分，无人工项。
     </div>
     {gauge}
+    {globe_btn}
     <details class="fold" style="margin-top:14px;">
       <summary><span>五维风险得分（固定权重：D/E 各 25%，A 20%，B/C 各 15%）{miss_note}</span><span class="btn-tag"></span></summary>
       <div style="margin-top:8px;">{dim_html}</div>

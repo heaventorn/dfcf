@@ -66,6 +66,9 @@ def _mk_session(referer=None):
 
 
 # 各来源独立会话（互不影响）
+# 备用 Cookie jar(默认不注入行情会话,见 load_cookies)
+_cookie_jar = {}
+
 _em_sess = _mk_session("https://quote.eastmoney.com/")
 _emdelay_sess = _mk_session("https://quote.eastmoney.com/")
 _push2ex_sess = _mk_session("https://quote.eastmoney.com/")
@@ -76,16 +79,28 @@ _news_sess = _mk_session()
 
 
 def load_cookies():
-    """把已保存的登录 Cookie 载入东财系列会话（行情接口无需登录，但有登录态更稳）。"""
+    """载入已保存的登录 Cookie（只存入备用 jar，默认不注入行情会话）。
+
+    实测：东财行情域（push2.eastmoney.com）若收到携带过期 / 无效登录 Cookie 的请求，
+    会直接断开连接（RemoteDisconnected），表现为「em 数据异常（网络错误(ConnectionError)）」；
+    去掉 Cookie 后请求正常。因此行情会话默认不带 Cookie，确实需要登录态的接口可显式：
+        apply_cookies(_em_sess)
+    """
     try:
         with open(config.COOKIE_FILE, "r", encoding="utf-8") as f:
             ck = json.load(f)
-        _em_sess.cookies.update(ck)
-        _emdelay_sess.cookies.update(ck)
-        _push2ex_sess.cookies.update(ck)
+        _cookie_jar.clear()
+        _cookie_jar.update(ck)
         return True
     except Exception:
         return False
+
+
+def apply_cookies(sess):
+    """把已载入的登录 Cookie 注入指定会话（仅限确实需要登录态的接口）。"""
+    if _cookie_jar:
+        sess.cookies.update(_cookie_jar)
+    return sess
 
 
 # 风控特征文本（命中即视为数据异常，触发切源）
@@ -100,11 +115,29 @@ def _is_bot_page(text):
     return any(m.lower() in t for m in _BOT_MARKS)
 
 
+def _get(sess, url, params=None, timeout=None):
+    """发 GET;连接被掐断时自动去掉 Cookie 重试一次。
+
+    背景:会话里若带了过期/无效的登录 Cookie,东财行情域(push2.eastmoney.com)会直接
+    断开连接(RemoteDisconnected),表现为"em 数据异常(网络错误(ConnectionError))";
+    去掉 Cookie 用干净会话请求即正常。仍失败则抛出异常,交由多源切源逻辑处理。
+    """
+    timeout = timeout or config.TIMEOUT
+    try:
+        return sess.get(url, params=params, timeout=timeout)
+    except requests.exceptions.RequestException:
+        if not len(sess.cookies):
+            raise
+        clean = requests.Session()
+        clean.headers.update(dict(sess.headers))
+        return clean.get(url, params=params, timeout=timeout)
+
+
 def _req_json(sess, url, params=None, timeout=None):
     """发 GET 请求并解析 JSON；连接失败 / 非200 / 风控页 / 解析失败都抛 DataAnomaly。"""
     timeout = timeout or config.TIMEOUT
     try:
-        r = sess.get(url, params=params, timeout=timeout)
+        r = _get(sess, url, params, timeout)
     except requests.exceptions.RequestException as e:
         raise DataAnomaly(f"网络错误({type(e).__name__})") from e
     if r.status_code != 200:
@@ -122,7 +155,7 @@ def _req_text(sess, url, params=None, timeout=None, encoding=None):
     """发 GET 请求并返回文本；连接失败 / 非200 / 风控页抛 DataAnomaly。"""
     timeout = timeout or config.TIMEOUT
     try:
-        r = sess.get(url, params=params, timeout=timeout)
+        r = _get(sess, url, params, timeout)
     except requests.exceptions.RequestException as e:
         raise DataAnomaly(f"网络错误({type(e).__name__})") from e
     if r.status_code != 200:
@@ -716,8 +749,8 @@ def _fund10_dividends(code):
 def get_indices():
     """主要指数行情，返回 [{name, price, change, change_pct, amount}]。"""
     providers = [
-        ("em", lambda: _em_indices(_EM)),
         ("emdelay", lambda: _em_indices(_EMD)),
+        ("em", lambda: _em_indices(_EM)),
         ("tx", _tx_indices),
         ("sina", _sina_indices),
     ]
@@ -729,8 +762,8 @@ def get_indices():
 def get_stock_rank(fid="f3", order="desc", limit=10):
     """个股榜：fid=f3 涨跌幅 / f62 成交额；order desc/asc。返回 [{code,name,price,change_pct,amount}]。"""
     providers = [
-        ("em", lambda: _em_stock_rank(_EM, fid, order, limit)),
         ("emdelay", lambda: _em_stock_rank(_EMD, fid, order, limit)),
+        ("em", lambda: _em_stock_rank(_EM, fid, order, limit)),
     ]
     if fid == "f62":
         providers.append(("sina", lambda: _sina_stock_rank("amount", order, limit)))
@@ -744,8 +777,8 @@ def get_stock_rank(fid="f3", order="desc", limit=10):
 def get_sector_rank(kind="industry", limit=10):
     """板块涨跌幅榜。返回 [{name, change_pct, amount, up, down, lead_stock}]。"""
     providers = [
-        ("em", lambda: _em_sector_rank(_EM, kind, limit)),
         ("emdelay", lambda: _em_sector_rank(_EMD, kind, limit)),
+        ("em", lambda: _em_sector_rank(_EM, kind, limit)),
     ]
     _, data = fetch(f"板块榜({kind})", providers, validate=lambda d: len(d) >= 1)
     return data or []
@@ -754,8 +787,8 @@ def get_sector_rank(kind="industry", limit=10):
 def get_sector_rank_fall(limit=5):
     """行业板块跌幅榜。返回 [{name, change_pct, lead_stock}]。"""
     providers = [
-        ("em", lambda: _em_sector_fall(_EM, limit)),
         ("emdelay", lambda: _em_sector_fall(_EMD, limit)),
+        ("em", lambda: _em_sector_fall(_EM, limit)),
     ]
     _, data = fetch("板块跌幅榜", providers, validate=lambda d: len(d) >= 1)
     return data or []
@@ -764,8 +797,8 @@ def get_sector_rank_fall(limit=5):
 def get_market_breadth():
     """全市场涨跌家数。返回 {total, up, down, flat}。"""
     providers = [
-        ("em", lambda: _em_breadth(_EM)),
         ("emdelay", lambda: _em_breadth(_EMD)),
+        ("em", lambda: _em_breadth(_EM)),
         ("sina", _sina_breadth),
     ]
     _, data = fetch("涨跌家数", providers, validate=lambda d: (d.get("total") or 0) >= 100, rounds=1)
