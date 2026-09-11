@@ -145,6 +145,41 @@ def window_label():
     return "近%d天" % WINDOW_DAYS
 
 
+# ---------------------------------------------------------------- 广告 / 推广过滤
+
+# 一出现就基本可判定为推广的词（在正常财经与社会新闻里几乎不出现）
+AD_HARD_WORDS = (
+    "竞猜", "抽奖", "领券", "现金红包", "红包大奖", "优惠券", "扫码领取",
+    "直播间福利", "点击抽奖", "免费领红包",
+)
+# 行动号召（祈使句）
+AD_CTA_WORDS = (
+    "马上参与", "快来参与", "立即参与", "点击参与", "点击查看", "立即领取",
+    "免费领取", "限时领取", "马上报名", "立即下载", "点击下载",
+)
+# 奖励承诺
+AD_PRIZE_WORDS = ("大奖", "红包", "奖金", "礼品", "福利", "奖品", "现金")
+
+
+def _is_ad(title):
+    """判断标题是否为广告 / 平台活动推广。
+
+    规则故意保守（宁可漏杀也不误杀）：只有「明确推广词」、或「行动号召」、
+    或「号召 + 奖励承诺」同时出现才判定。
+    「开户 / 优惠 / 预约 / 投票 / 活动」这类高频正常词**不**作特征 —— 实测把它们
+    当特征会误杀「8月A股两融新开户」「熊猫宝宝参观预约」「机构采购打五折」等真新闻。
+    """
+    if not getattr(config, "NEWS_AD_FILTER", True):
+        return False
+    t = title or ""
+    if any(w in t for w in AD_HARD_WORDS):
+        return True
+    if any(w in t for w in AD_CTA_WORDS):
+        return True
+    return (any(a in t for a in ("参与", "点击", "领取"))
+            and any(b in t for b in AD_PRIZE_WORDS))
+
+
 def _in_window(time_str, ws_str):
     if not time_str:
         return True  # 无时间信息时保留
@@ -312,6 +347,8 @@ def fetch_events(limit=None, drop_without_geo=True, days=WINDOW_DAYS):
     for n in raw_news:
         title = n["title"]
         if not title or not _in_window(n["time"], ws):
+            continue
+        if _is_ad(title):               # 广告 / 平台活动推广直接丢弃
             continue
         key = dedup_key(title)          # 跨信源近似去重(去标点后前 24 字)
         if key in seen:
