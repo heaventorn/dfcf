@@ -20,9 +20,12 @@ echo.
 echo ============================================================
 echo   Done. Dashboard URL:
 echo     http://127.0.0.1:8766/output/index.html
-echo   Background services (auto-started, keep running):
-echo     page server  : http://127.0.0.1:8766
-echo     position mgr : http://127.0.0.1:8765
+echo   Background services (auto-started):
+echo     page + live news : http://127.0.0.1:8766     (news API: /api/news)
+echo     position mgr     : http://127.0.0.1:8765
+echo   Global news auto-refreshes every 5 minutes and updates
+echo   the globe + news panel in place (no page reload).
+echo   Closing this window stops all background services.
 echo ============================================================
 echo.
 pause

@@ -24,12 +24,16 @@
 """
 
 import json
+import os
 import re
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import config
 from utils import to_float as _to_float
@@ -56,12 +60,64 @@ def _empty(msg):
     return DataAnomaly(msg, soft=True)
 
 
+def _build_retry():
+    """连接级重试策略：断连 / 超时 / 5xx / 429 自动退避重试。
+
+    这是「同一来源内部的快速重试」，与 fetch() 的「跨来源切换」是两层：
+    网络偶发抖动在这里被吸收掉，不至于立刻演变成整轮采集失败。
+    raise_on_status=False：非 2xx 仍返回 Response，交由 _req_* 统一判定，
+    保持「HTTP 4xx/5xx = 硬异常 → 切源 + 冷却」的既有语义。
+    """
+    return Retry(
+        total=config.HTTP_RETRIES,
+        connect=config.HTTP_RETRIES,
+        read=config.HTTP_RETRIES,
+        status=config.HTTP_RETRIES,
+        backoff_factor=config.HTTP_BACKOFF,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "HEAD"]),
+        raise_on_status=False,
+    )
+
+
+def _apply_env_proxy(sess):
+    """读取环境代理（HTTP_PROXY / HTTPS_PROXY / ALL_PROXY）。
+
+    requests 默认能读 http(s)_proxy，但对 ALL_PROXY 支持不完整（urllib3 的
+    'all' scheme 不会被 select_proxy 命中），这里显式补齐，便于在公司网络 /
+    本地代理环境下无需改代码即可取数。USE_ENV_PROXY=False 则强制直连。
+    """
+    if not getattr(config, "USE_ENV_PROXY", True):
+        sess.trust_env = False
+        return sess
+    env = os.environ
+    http_p = env.get("HTTP_PROXY") or env.get("http_proxy")
+    https_p = env.get("HTTPS_PROXY") or env.get("https_proxy")
+    all_p = env.get("ALL_PROXY") or env.get("all_proxy")
+    if all_p:
+        http_p = http_p or all_p
+        https_p = https_p or all_p
+    if http_p:
+        sess.proxies["http"] = http_p
+    if https_p:
+        sess.proxies["https"] = https_p
+    return sess
+
+
 def _mk_session(referer=None):
     h = dict(config.HEADERS)
     if referer:
         h["Referer"] = referer
     s = requests.Session()
     s.headers.update(h)
+    adapter = HTTPAdapter(
+        max_retries=_build_retry(),
+        pool_connections=config.HTTP_POOL_SIZE,
+        pool_maxsize=config.HTTP_POOL_SIZE,
+    )
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    _apply_env_proxy(s)
     return s
 
 
@@ -104,15 +160,39 @@ def apply_cookies(sess):
 
 
 # 风控特征文本（命中即视为数据异常，触发切源）
-_BOT_MARKS = (
-    "访问过于频繁", "请求过于频繁", "访问受限", "验证码", "封禁",
-    "forbidden", "verify", "captcha", "freq", "too many", "rate limit",
+# 分两档，避免对正常 JSON / 纯文本正文误判：
+#   _BOT_MARKS_STRONG —— 中文强特征，任何响应类型命中即判风控；
+#   _BOT_MARKS_WEAK   —— 英文 / 宽泛词，仅当响应是 HTML（或 JSON 解析失败）时才判，
+#                        否则正常数据里出现 "verify" / "freq" 之类会被错杀成风控页。
+_BOT_MARKS_STRONG = (
+    "访问过于频繁", "请求过于频繁", "访问受限", "访问频率", "验证码", "封禁", "人机验证",
+)
+_BOT_MARKS_WEAK = (
+    "forbidden", "captcha", "verify", "too many", "rate limit", "access denied",
+    "unusual traffic",
 )
 
 
-def _is_bot_page(text):
-    t = (text or "").lower()
-    return any(m.lower() in t for m in _BOT_MARKS)
+def _looks_like_html(text, content_type=None):
+    """判断响应是否为 HTML：先看 Content-Type，缺失时看正文开头。"""
+    ct = (content_type or "").lower()
+    if "html" in ct:
+        return True
+    if ct:
+        return False
+    head = (text or "")[:200].lstrip().lower()
+    return head.startswith("<!doctype") or head.startswith("<html")
+
+
+def _is_bot_page(text, content_type=None):
+    """风控页判定：中文强特征恒判；英文宽泛词仅在 HTML 响应下判。"""
+    t = text or ""
+    if any(m in t for m in _BOT_MARKS_STRONG):
+        return True
+    if not _looks_like_html(t, content_type):
+        return False
+    low = t.lower()
+    return any(m in low for m in _BOT_MARKS_WEAK)
 
 
 def _get(sess, url, params=None, timeout=None):
@@ -134,7 +214,11 @@ def _get(sess, url, params=None, timeout=None):
 
 
 def _req_json(sess, url, params=None, timeout=None):
-    """发 GET 请求并解析 JSON；连接失败 / 非200 / 风控页 / 解析失败都抛 DataAnomaly。"""
+    """发 GET 请求并解析 JSON；连接失败 / 非200 / 风控页 / 解析失败都抛 DataAnomaly。
+
+    风控判定只在 JSON 解析失败时才做：JSON 能正常解析就说明拿到的是数据而非风控页，
+    不必再对正文做关键词匹配（否则正文里出现 "verify" 之类会被误判成风控页）。
+    """
     timeout = timeout or config.TIMEOUT
     try:
         r = _get(sess, url, params, timeout)
@@ -142,17 +226,19 @@ def _req_json(sess, url, params=None, timeout=None):
         raise DataAnomaly(f"网络错误({type(e).__name__})") from e
     if r.status_code != 200:
         raise DataAnomaly(f"HTTP {r.status_code}")
-    text = r.text or ""
-    if _is_bot_page(text):
-        raise DataAnomaly("疑似风控页面")
     try:
         return r.json()
     except Exception:
+        if _is_bot_page(r.text or "", r.headers.get("Content-Type")):
+            raise DataAnomaly("疑似风控页面")
         raise DataAnomaly("JSON 解析失败")
 
 
 def _req_text(sess, url, params=None, timeout=None, encoding=None):
-    """发 GET 请求并返回文本；连接失败 / 非200 / 风控页抛 DataAnomaly。"""
+    """发 GET 请求并返回文本；连接失败 / 非200 / 风控页抛 DataAnomaly。
+
+    风控判定按响应类型分档：HTML 响应匹配全部特征，纯文本只匹配中文强特征。
+    """
     timeout = timeout or config.TIMEOUT
     try:
         r = _get(sess, url, params, timeout)
@@ -163,7 +249,7 @@ def _req_text(sess, url, params=None, timeout=None, encoding=None):
     if encoding:
         r.encoding = encoding
     text = r.text or ""
-    if _is_bot_page(text):
+    if _is_bot_page(text, r.headers.get("Content-Type")):
         raise DataAnomaly("疑似风控页面")
     return text
 
@@ -220,18 +306,53 @@ def _mark_fail(name, soft=False):
             s.cooldown_until = time.time() + cd
 
 
-def health_report():
-    """输出各来源健康状态，用于运行结束汇总。"""
-    lines = []
+def health_snapshot():
+    """各来源健康状态的结构化快照（供落库 / 上报，避免解析文本输出）。"""
+    now = time.time()
+    out = []
     for name in sorted(_sources):
         s = _src(name)
-        state = "冷却中" if time.time() < s.cooldown_until else "正常"
-        lines.append(f"  {name:<9} {state}  成功={s.ok} 失败={s.fail} 连续失败={s.fails}")
+        out.append({
+            "name": name,
+            "state": "冷却中" if now < s.cooldown_until else "正常",
+            "ok": s.ok, "fail": s.fail, "fails": s.fails,
+        })
+    return out
+
+
+def health_report():
+    """输出各来源健康状态，用于运行结束汇总。"""
+    lines = [
+        f"  {h['name']:<9} {h['state']}  成功={h['ok']} 失败={h['fail']} 连续失败={h['fails']}"
+        for h in health_snapshot()
+    ]
+    if _internal_defects:
+        lines.append("  [代码缺陷] 以下异常不是数据源问题，未计入来源冷却（详见运行日志）：")
+        for key, name, desc in _internal_defects:
+            lines.append(f"    {key} / {name}: {desc}")
     return "\n".join(lines)
 
 
 def _switch_log(key, name, reason):
     print(f"    [切源] {key}: {name} 数据异常（{reason}），切换下一来源")
+
+
+# 预期内的「来源异常」：数据异常 + 网络层异常。
+# 其余异常（KeyError / AttributeError / TypeError ...）视为代码缺陷，
+# 不计入来源冷却，避免冤枉一个本来正常的来源（见 fetch / _record_defect）。
+_EXPECTED_SOURCE_ERRORS = (DataAnomaly, requests.exceptions.RequestException)
+
+# 运行期间捕获到的代码缺陷：(key, 来源名, 异常摘要)，供 health_report 暴露
+_internal_defects = []
+
+
+def _record_defect(key, name, exc):
+    """记录「非数据源问题」的异常：打印 traceback，并计入缺陷清单。"""
+    _internal_defects.append((key, name, f"{type(exc).__name__}: {exc}"))
+    print(f"    [代码缺陷] {key}: {name} 抛出 {type(exc).__name__}: {exc}")
+    print("      ↑ 这不是数据源异常，多半是代码 bug；已跳过该来源且不计冷却。traceback：")
+    for line in traceback.format_exc().rstrip().splitlines():
+        print("      " + line)
 
 
 # ================================================================ 多源取数统一入口
@@ -244,6 +365,14 @@ def fetch(key, providers, validate=None, rounds=2):
     validate : 可选，对返回数据做结构校验 fn(data)->bool，False 视为数据异常。
     rounds   : 全部来源失败后的整体重试轮数（含首次）。
     返回 (来源名, 数据)；全部失败返回 (None, None)。
+
+    异常分两类处理：
+      - 预期内的来源异常（DataAnomaly / requests 网络异常）：记来源失败、按软硬
+        异常冷却、切下一个来源；
+      - 其它异常（KeyError / AttributeError / TypeError ...）：视为代码缺陷，
+        打印 traceback 并计入 _internal_defects，但**不计入来源冷却**。
+        过去这类异常被 `except Exception` 静默当成「来源故障」吞掉，bug 会被
+        「切源成功」掩盖，数据恒空却查不出原因。
     """
     for rnd in range(rounds):
         for name, fn in providers:
@@ -255,12 +384,11 @@ def fetch(key, providers, validate=None, rounds=2):
                     raise _empty("结构校验未通过")
                 _mark_ok(name)
                 return name, data
-            except DataAnomaly as e:
-                _mark_fail(name, soft=e.soft)
+            except _EXPECTED_SOURCE_ERRORS as e:
+                _mark_fail(name, soft=getattr(e, "soft", False))
                 _switch_log(key, name, str(e))
-            except Exception as e:
-                _mark_fail(name)
-                _switch_log(key, name, f"{type(e).__name__}: {e}")
+            except Exception as e:  # 代码缺陷：必须可见，不能静默吞掉
+                _record_defect(key, name, e)
             time.sleep(config.SOURCE_SWITCH_DELAY)
         if rnd < rounds - 1:
             time.sleep(config.SOURCE_ALLFAIL_DELAY)
@@ -378,7 +506,7 @@ def _em_breadth(host):
     pct_list = [_to_float(x.get("f3")) for x in ((first or {}).get("data", {}).get("diff") or [])]
 
     missing = list(range(2, pages + 1))
-    for _ in range(3):  # 最多补拉 3 轮
+    for _ in range(config.BREADTH_REFILL_ROUNDS):  # 最多补拉 N 轮（见 config）
         if not missing:
             break
         with ThreadPoolExecutor(max_workers=config.WORKERS) as ex:
@@ -744,7 +872,7 @@ def _fund10_dividends(code):
     return out
 
 
-# ================================================================ 公开 API（面向 collector / dividend）
+# ================================================================ 公开 API（面向 collector）
 
 def get_indices():
     """主要指数行情，返回 [{name, price, change, change_pct, amount}]。"""

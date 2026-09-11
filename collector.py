@@ -7,7 +7,7 @@
   - 任一来源出现数据异常（断连 / 空数据 / 结构异常 / 风控页）时自动切换到下一来源；
   - 异常来源进入冷却期并自动恢复，运行结束打印来源健康报告。
 
-返回结构与原单源版本完全一致，main.py / html_report.py 无需改动。
+返回结构保持不变，main.py 无需改动。
 """
 
 import json
@@ -28,8 +28,13 @@ from sources import (
 )
 
 
-def _retry_on_empty(func, *args, retries=3, **kwargs):
-    """关键采集项：结果为空时整体重试（多源已内部切源，这里兜底整链重试）。"""
+def _retry_on_empty(func, *args, retries=None, **kwargs):
+    """关键采集项：结果为空时整体重试（多源已内部切源，这里兜底整链重试）。
+
+    重试次数取 config.COLLECT_RETRIES，可在一处统一调整。
+    """
+    if retries is None:
+        retries = config.COLLECT_RETRIES
     result = func(*args, **kwargs)
     for _ in range(retries - 1):
         if result:

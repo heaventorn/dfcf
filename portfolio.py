@@ -4,7 +4,7 @@
 
 根据「家庭投资组合」做每日监控，覆盖三类核心资产：
   1) 低风险固收区（约 48%）：货币ETF / 国债ETF / 短债ETF / 国债逆回购
-  2) 红利低波区（约 30%）：红利 / 红利低波 ETF（详细股息率分析见 dividend.py）
+  2) 红利低波区（约 30%）：红利 / 红利低波 ETF
   3) 高成长权益区（约 20%）：国内高风险主动基金 + 纳指/标普 ETF
 
 数据源（走 sources.py 多源适配）：
@@ -263,10 +263,14 @@ def _build_agent_button(it):
 
 
 def generate_report_section(data, dividend_cards=""):
-    """生成个人组合监控的 HTML 内容片段（嵌入综合报告，第二部分）。
+    """生成个人组合监控的 HTML 内容片段（嵌入旧的「综合报告」，第二部分）。
 
-    dividend_cards: 红利/红利低波 ETF 追踪卡片的 HTML 片段
-    （dividend.generate_cards 生成），作为本部分的「② 红利低波区」子区块嵌入。
+    注意：旧的综合报告链路（html_report.save_html_report / dividend.generate_cards）
+    已随目录清理移除 —— main.py 现在只产出主页 index.html，因此本函数目前没有调用者。
+    保留它是为了让「个人组合监控」的表格渲染逻辑随时可用。
+
+    dividend_cards: 红利/红利低波 ETF 追踪卡片的 HTML 片段，作为本部分的
+    「② 红利低波区」子区块嵌入。
     """
 
     fi = (data or {}).get("fixed_income") or {}

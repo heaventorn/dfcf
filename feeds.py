@@ -92,8 +92,11 @@ def _jin10_app_id():
     return _jin10_app["id"]
 
 
-def fetch_cls(limit=80):
+def fetch_cls(limit=None):
     """财联社电报(公开缓存接口)。返回 [{time, title, src, important}]。"""
+    import config as _cfg
+    if limit is None:
+        limit = int(getattr(_cfg, "NEWS_CLS_LIMIT", 150))
     url = CLS_URL + "?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9"
     h = dict(UA)
     h["Referer"] = "https://www.cls.cn/telegraph"
@@ -115,8 +118,11 @@ def fetch_cls(limit=80):
     return out
 
 
-def fetch_jin10(limit=80):
+def fetch_jin10(limit=None):
     """金十快讯(channel=-8200 全球)。返回 [{time, title, src, important}]。"""
+    import config as _cfg
+    if limit is None:
+        limit = int(getattr(_cfg, "NEWS_JIN10_LIMIT", 150))
     h = dict(UA)
     h.update({"Referer": "https://www.jin10.com/", "Origin": "https://www.jin10.com",
               "x-app-id": _jin10_app_id(), "x-version": "1.0.0"})
@@ -140,8 +146,13 @@ def fetch_jin10(limit=80):
 THS_URL = "https://news.10jqka.com.cn/tapp/news/push/stock/"
 
 
-def fetch_ths(limit=200, pages=4, page_size=100):
+def fetch_ths(limit=None, pages=None, page_size=100):
     """同花顺快讯(公开接口)。返回 [{time, title, src:'同花顺', important}]。"""
+    import config as _cfg
+    if limit is None:
+        limit = int(getattr(_cfg, "NEWS_THS_LIMIT", 400))
+    if pages is None:
+        pages = int(getattr(_cfg, "NEWS_THS_PAGES", 8))
     out = []
     h = dict(UA)
     h["Referer"] = "https://news.10jqka.com.cn/realtimenews.html"
@@ -163,6 +174,49 @@ def fetch_ths(limit=200, pages=4, page_size=100):
                 continue
             out.append({"time": _ts2str(it.get("ctime")), "title": title,
                         "src": "同花顺", "important": 1 if str(it.get("color") or "") in ("2", "3") else 0})
+            if len(out) >= limit:
+                return out
+        time.sleep(0.2)
+    return out
+
+
+SINA_URL = "https://zhibo.sina.com.cn/api/zhibo/feed"
+
+
+def fetch_sina(limit=None, pages=None, page_size=100):
+    """新浪财经 7x24 直播（可翻页，历史约 900 条）。返回 [{time, title, src, important}]。
+
+    与 sources._sina_news 用的是同一接口，但那边只取首页做「财经快讯」展示，
+    这里翻页取回当天全部，供全球事件地球使用。
+    """
+    import config as _cfg
+    if limit is None:
+        limit = int(getattr(_cfg, "NEWS_SINA_LIMIT", 500))
+    if pages is None:
+        pages = int(getattr(_cfg, "NEWS_SINA_PAGES", 6))
+    h = dict(UA)
+    h["Referer"] = "https://finance.sina.com.cn/7x24/"
+    out = []
+    for p in range(1, pages + 1):
+        url = ("%s?page=%d&page_size=%d&zhibo_id=152&tag_id=0&dire=f&dpc=1&pagesize=%d"
+               % (SINA_URL, p, page_size, page_size))
+        try:
+            text = urllib.request.urlopen(
+                urllib.request.Request(url, headers=h), timeout=15
+            ).read().decode("utf-8", "ignore")
+            data = json.loads(text)
+            lst = ((((data or {}).get("result") or {}).get("data") or {})
+                   .get("feed") or {}).get("list") or []
+        except Exception:
+            break
+        if not lst:
+            break
+        for it in lst:
+            title = _clip(_strip_html(it.get("rich_text") or ""))
+            if not title:
+                continue
+            out.append({"time": (it.get("create_time") or "").strip(), "title": title,
+                        "src": "新浪", "important": 0})
             if len(out) >= limit:
                 return out
         time.sleep(0.2)

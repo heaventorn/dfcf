@@ -10,6 +10,7 @@
 
 输出：
     output/latest_market.json          原始采集数据
+    output/history.db                  历史快照库（每轮一条，趋势/环比查询：python history.py）
     output/index.html                  主页「3D 地球指挥台」= 中间 3D 地球
                                        + 左侧「大A行情概况 + 白底可缩放行情图 / 新闻·日历」
                                        + 右侧「我的持仓 + 配置标的行情 / 空中飞人指数」
@@ -19,7 +20,9 @@
   表现为「国界/光点都在，但地球是黑球、只剩一圈亮边」。）
 
 运行完会自动后台拉起两个常驻服务并打开主页：
-    8766  主页静态服务(serve_page.py)    8765  持仓管理服务(position_manager.py)
+    8766  主页 + 实时新闻服务(live_server.py，每 5 分钟自动刷新全球新闻)
+    8765  持仓管理服务(position_manager.py)
+两个服务继承本进程的 console：关掉启动脚本窗口 / Ctrl+C 会一起退出，不留残余进程。
 """
 
 import argparse
@@ -42,7 +45,12 @@ PAGE_URL = "http://127.0.0.1:8766/output/index.html"
 
 
 def _start_bg(script, port, label):
-    """后台拉起一个常驻服务(端口已被占用则跳过);返回是否端口就绪。"""
+    """后台拉起一个常驻服务(端口已被占用则跳过);返回是否端口就绪。
+
+    刻意**不**用 CREATE_NO_WINDOW：那会给子进程新建一个独立 console，关掉启动脚本
+    窗口后它就成了孤儿进程、继续占着端口。让子进程继承当前 console，Windows 在
+    窗口关闭 / Ctrl+C 时会一并结束它，即「关掉 bat，后台服务也自动关闭」。
+    """
     import socket
     import subprocess
     import time as _time
@@ -54,8 +62,7 @@ def _start_bg(script, port, label):
             return True
 
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen([sys.executable, path], creationflags=flags)
+    subprocess.Popen([sys.executable, path])   # 继承 console，随启动脚本一起退出
     for _ in range(20):
         _time.sleep(0.2)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
@@ -65,6 +72,100 @@ def _start_bg(script, port, label):
                 return True
     print(f"[提示] {label}启动较慢,稍后可直接访问 http://127.0.0.1:{port}")
     return False
+
+
+def _collect_airman():
+    """罗力豪空中飞人指数（主页右下方窗口）；失败返回 (None, [])。"""
+    try:
+        import airman
+        raw_a = airman.collect_all()
+        return airman.compute_index(raw_a), airman.collect_reference(raw_a)
+    except Exception as e:
+        print(f"[提示] 空中飞人指数计算未完成（{e}），主页右下方将显示为空。")
+        return None, []
+
+
+def _collect_portfolio(data):
+    """个人组合监控 + 真实持仓（主页右上方窗口）；失败不影响主流程。"""
+    try:
+        import portfolio
+        data["portfolio"] = portfolio.collect_all()
+    except Exception as e:
+        print(f"[提示] 个人组合监控未完成（{e}），主页右上方将显示为空。")
+    return data.get("portfolio")
+
+
+def _record_history(data, use_login=True):
+    """历史快照落库（output/history.db）；失败不影响主流程。"""
+    try:
+        import history
+        import sources
+        sid = history.record_run(
+            data,
+            health=sources.health_snapshot(),
+            note="main.py" + ("" if use_login else " --no-login"),
+        )
+        print(f"✓ 历史快照已入库: output/history.db (snapshot #{sid})")
+        return sid
+    except Exception as e:
+        print(f"[提示] 历史快照落库未完成（{e}），不影响本次报告。")
+        return None
+
+
+def _build_home_page(data, airman_res, airman_refs):
+    """生成主页「3D 地球指挥台」（唯一产出页面）；失败返回 None。"""
+    try:
+        import events as globe_events
+        import home as home_mod
+        evs = globe_events.fetch_events()   # 条数上限与时间窗由 config 决定
+        payload = home_mod.build_payload(
+            data, events=evs, airman_res=airman_res, airman_refs=airman_refs,
+            portfolio_data=data.get("portfolio"),
+            window_days=globe_events.WINDOW_DAYS,
+        )
+        chart_data = home_mod.generate_chart_data()
+        home_path = os.path.join(config.OUTPUT_DIR, "index.html")
+        home_mod.build_home(evs, payload, home_path, assets_prefix="../assets/",
+                            chart_data=chart_data)
+        print("✓ 主页（3D 地球指挥台）已生成:", home_path)
+        return home_path
+    except Exception as e:
+        print(f"[提示] 主页生成未完成（{e}），可运行 python home.py --probe 排查。")
+        return None
+
+
+def _start_services():
+    """后台拉起持仓管理(8765)与「主页 + 实时新闻」服务(8766)；返回主页服务是否就绪。
+
+    主页统一走 http 而不是 file://：浏览器的 file:// 安全策略会拦截页面读取
+    本地 8K 地球贴图（表现为「地球是黑球，只剩一圈亮边」）。
+    8766 使用 live_server.py：同一端口既发布静态主页，也提供 /api/news
+    （前端按版本号轮询，后端每 config.NEWS_REFRESH_SECONDS 秒自动重抓新闻）。
+    """
+    try:
+        _start_bg("position_manager.py", 8765, "持仓管理服务")
+    except Exception as e:
+        print(f"[提示] 持仓管理服务自动启动失败（{e}）")
+    try:
+        return _start_bg("live_server.py", 8766, "主页 + 实时新闻服务")
+    except Exception as e:
+        print(f"[提示] 主页/新闻服务自动启动失败（{e}），将退回 file:// 打开（地球贴图可能不显示）")
+        return False
+
+
+def _open_page(home_path, serve_ok):
+    """在浏览器打开主页；主页服务未就绪时退回 file://。"""
+    if not home_path:
+        print("[提示] 主页未生成，跳过自动打开。")
+        return
+    try:
+        import webbrowser
+        from pathlib import Path
+        url = PAGE_URL if serve_ok else Path(home_path).resolve().as_uri()
+        webbrowser.open(url)
+        print("✓ 已在浏览器打开主页:", url)
+    except Exception as e:
+        print(f"[提示] 自动打开主页失败（{e}），请手动访问 {PAGE_URL}")
 
 
 def run(use_login=True, open_browser=True):
@@ -103,69 +204,29 @@ def run(use_login=True, open_browser=True):
     print("✓ 原始数据已保存:", raw_path)
 
     # 4. 罗力豪空中飞人指数（主页右下方窗口）
-    airman_res = None
-    airman_refs = []
-    try:
-        import airman
-        raw_a = airman.collect_all()
-        airman_res = airman.compute_index(raw_a)
-        airman_refs = airman.collect_reference(raw_a)
-    except Exception as e:
-        print(f"[提示] 空中飞人指数计算未完成（{e}），主页右下方将显示为空。")
+    airman_res, airman_refs = _collect_airman()
 
     # 5. 个人组合监控 + 真实持仓（主页右上方窗口）
-    try:
-        import portfolio
-        data["portfolio"] = portfolio.collect_all()
-    except Exception as e:
-        print(f"[提示] 个人组合监控未完成（{e}），主页右上方将显示为空。")
+    _collect_portfolio(data)
+
+    # 5.1 历史快照落库（output/history.db；查询趋势 / 环比：python history.py）
+    _record_history(data, use_login=use_login)
 
     # 6. 生成主页「3D 地球指挥台」（唯一产出页面:output/index.html）
-    home_path = None
-    try:
-        import events as globe_events
-        import home as home_mod
-        evs = globe_events.fetch_events(limit=300)
-        payload = home_mod.build_payload(
-            data, events=evs, airman_res=airman_res, airman_refs=airman_refs,
-            portfolio_data=data.get("portfolio"),
-            window_days=globe_events.WINDOW_DAYS,
-        )
-        chart_data = home_mod.generate_chart_data()
-        home_path = os.path.join(config.OUTPUT_DIR, "index.html")
-        home_mod.build_home(evs, payload, home_path, assets_prefix="../assets/",
-                            chart_data=chart_data)
-        print("✓ 主页（3D 地球指挥台）已生成:", home_path)
-    except Exception as e:
-        print(f"[提示] 主页生成未完成（{e}），可运行 python home.py --probe 排查。")
+    home_path = _build_home_page(data, airman_res, airman_refs)
 
-    # 6.1 持仓管理服务（127.0.0.1:8765）
-    try:
-        _start_bg("position_manager.py", 8765, "持仓管理服务")
-    except Exception as e:
-        print(f"[提示] 持仓管理服务自动启动失败（{e}）")
-
-    # 6.2 主页静态服务（127.0.0.1:8766）——file:// 下浏览器会拦本地贴图,主页统一走 http
-    serve_ok = False
-    try:
-        serve_ok = _start_bg("serve_page.py", 8766, "主页静态服务")
-    except Exception as e:
-        print(f"[提示] 主页静态服务自动启动失败（{e}），将退回 file:// 打开（地球贴图可能不显示）")
+    # 6.1 / 6.2 常驻后台服务：8765 持仓管理 / 8766 主页 + 实时新闻(每 5 分钟刷新)
+    serve_ok = _start_services()
 
     # 7. 自动打开主页（--no-open 可跳过）
-    if open_browser and home_path:
-        try:
-            import webbrowser
-            from pathlib import Path
-            url = PAGE_URL if serve_ok else Path(home_path).resolve().as_uri()
-            webbrowser.open(url)
-            print("✓ 已在浏览器打开主页:", url)
-        except Exception as e:
-            print(f"[提示] 自动打开主页失败（{e}），请手动访问 {PAGE_URL}")
+    if open_browser:
+        _open_page(home_path, serve_ok)
 
     print()
     print("=" * 60)
     print("  主页:", PAGE_URL)
+    print("  新闻:", "http://127.0.0.1:8766/api/news",
+          "（每 %d 秒自动刷新）" % getattr(config, "NEWS_REFRESH_SECONDS", 300))
     print("  文件:", home_path or "(生成失败,详见上方提示)")
     print("=" * 60)
 

@@ -30,14 +30,16 @@ import re
 import time
 import urllib.request
 
+import config
+
 from geo import locate
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 NEWS_URL = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_{n}_{p}_.html"
 WALLSTCN_URL = "https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&client=pc&limit={n}"
 
-# 消息时间窗:只保留最近 N 天
-WINDOW_DAYS = 3
+# 消息时间窗:只保留最近 N 天（集中在 config.NEWS_WINDOW_DAYS 里调；页面文案也读它）
+WINDOW_DAYS = getattr(config, "NEWS_WINDOW_DAYS", 7)
 
 # 命中即"重要事件",关键词给影响等级(3 高 / 2 中)与类型标签
 SEV3_KEYWORDS = [
@@ -126,8 +128,21 @@ def _ts2str(v):
 
 
 def _window_start_str(days=WINDOW_DAYS):
-    """时间窗起点 'YYYY-MM-DD HH:MM:SS'(同格式字符串可直接比较)。"""
+    """时间窗起点 'YYYY-MM-DD HH:MM:SS'(同格式字符串可直接比较)。
+
+    config.NEWS_TODAY_ONLY 为真时按「自然日」取今天 0 点（只保留当天新闻）；
+    否则退回「最近 N 天」的滚动窗口。
+    """
+    if getattr(config, "NEWS_TODAY_ONLY", False):
+        return time.strftime("%Y-%m-%d 00:00:00")
     return (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def window_label():
+    """时间窗文案（页面标题 / 新闻栏统一用它）：“今日” 或 “近 N 天”。"""
+    if getattr(config, "NEWS_TODAY_ONLY", False):
+        return "今日"
+    return "近%d天" % WINDOW_DAYS
 
 
 def _in_window(time_str, ws_str):
@@ -136,8 +151,10 @@ def _in_window(time_str, ws_str):
     return time_str >= ws_str
 
 
-def _fetch_eastmoney(per_page=100, max_pages=8):
+def _fetch_eastmoney(per_page=100, max_pages=None):
     """东财 7x24 快讯(翻页取回时间窗内全部)。"""
+    if max_pages is None:
+        max_pages = int(getattr(config, "NEWS_EM_PAGES", 20))
     ws = _window_start_str()
     out, early = [], False
     for page in range(1, max_pages + 1):
@@ -162,8 +179,10 @@ def _fetch_eastmoney(per_page=100, max_pages=8):
     return out
 
 
-def _fetch_wallstcn(limit=200):
+def _fetch_wallstcn(limit=None):
     """华尔街见闻 global-channel 快讯。"""
+    if limit is None:
+        limit = int(getattr(config, "NEWS_WALLSTCN_LIMIT", 300))
     url = WALLSTCN_URL.format(n=limit)
     req = urllib.request.Request(url, headers=UA)
     text = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "ignore")
@@ -262,7 +281,7 @@ def _locate_country(title):
     return None
 
 
-def fetch_events(limit=300, drop_without_geo=True, days=WINDOW_DAYS):
+def fetch_events(limit=None, drop_without_geo=True, days=WINDOW_DAYS):
     """多信源抓取(东财 7x24 / 华尔街见闻 / 财联社 / 金十 / 同花顺)→ 时间窗过滤
     → geo 归因(SPOTS 精确地点,兜底按国名归因到该国中心)→ 分级分类。按时间倒序。
 
@@ -270,12 +289,15 @@ def fetch_events(limit=300, drop_without_geo=True, days=WINDOW_DAYS):
     sev: 3 高影响 / 2 中影响 / 1 普通快讯(用于提高光点密度,前端以浅色小点呈现)。
     各源条数记录在 feeds.SOURCE_STATUS(供主页展示来源状态,-1 表示该源抓取失败)。
     """
-    from feeds import fetch_cls, fetch_jin10, fetch_ths, dedup_key, SOURCE_STATUS
+    if limit is None:
+        limit = getattr(config, "NEWS_LIMIT", 1000)
+    from feeds import fetch_cls, fetch_jin10, fetch_ths, fetch_sina, dedup_key, SOURCE_STATUS
 
     label = {"_fetch_eastmoney": "东财", "_fetch_wallstcn": "见闻",
-             "fetch_cls": "财联社", "fetch_jin10": "金十", "fetch_ths": "同花顺"}
+             "fetch_cls": "财联社", "fetch_jin10": "金十", "fetch_ths": "同花顺",
+             "fetch_sina": "新浪"}
     raw_news = []
-    for fn in (_fetch_eastmoney, _fetch_wallstcn, fetch_cls, fetch_jin10, fetch_ths):
+    for fn in (_fetch_eastmoney, _fetch_wallstcn, fetch_cls, fetch_jin10, fetch_ths, fetch_sina):
         name = label.get(getattr(fn, "__name__", "?"), "其它")
         try:
             got = fn()
@@ -333,7 +355,7 @@ def _hot_items(events, top=HOT_TOP_N):
     scope = "今日"
     if not pool:
         pool = events
-        scope = "近" + str(WINDOW_DAYS) + "天"
+        scope = window_label()
     scored = []
     for e in pool:
         sc = (e.get("sev") or 0) * 20 + (30 if e.get("kind") == "突发" else 0)
@@ -470,7 +492,10 @@ _PAGE_JS = r"""
     .pointRadius(function (d) { return (d.sev >= 2 ? 0.42 : 0.26) + d.sev * 0.1 + (d.count > 1 ? Math.min(0.28, d.count * 0.045) : 0); })
     .pointsTransitionDuration(600)
 
-    .ringsData(groups.filter(function (d) { return d.sev >= 2 || d.count > 1; }))
+    // 涟漪(光点向外扩散的脉冲环)已按要求关闭 —— 数据置空即不渲染任何环。
+    // 若要恢复：把下面的 [] 换回
+    //   groups.filter(function (d) { return d.sev >= 2 || d.count > 1; })
+    .ringsData([])
     .ringLat(function (d) { return d.lat; })
     .ringLng(function (d) { return d.lng; })
     .ringColor(function (d) { return ringColorOf(d.sev); })
@@ -1030,7 +1055,7 @@ def _assemble(events, header_html, assets_prefix="assets/",
 def _preview_header(n):
     return ('<div class="hud" id="title">'
             '<h1>🌍 全球宏观事件 · 3D 实时地图</h1>'
-            '<div class="sub">近 ' + str(WINDOW_DAYS) + ' 天重要财经事件（东财 7x24 + 华尔街见闻） · 共 '
+            '<div class="sub">' + window_label() + ' 重要财经事件（东财 7x24 + 华尔街见闻） · 共 '
             + str(n) + ' 条</div></div>')
 
 
@@ -1052,7 +1077,7 @@ def build_detail_page(events, meta, out_path, assets_prefix="assets/"):
     total = meta.get("total")
     total_txt = f"{total:.0f}" if isinstance(total, (int, float)) else "?"
     sub = ('空中飞人指数 ' + total_txt + ' 分 · ' + str(meta.get("level") or "?") +
-           '（测算 ' + str(meta.get("time") or "") + '）· 近 ' + str(WINDOW_DAYS) + ' 天事件 '
+           '（测算 ' + str(meta.get("time") or "") + '）· ' + window_label() + ' 事件 '
            + str(len(events)) + ' 条')
     badge = ('<div style="margin-top:10px;"><span style="display:inline-block;padding:4px 14px;'
              'border-radius:999px;color:#fff;font-weight:700;font-size:13px;background:' + col + ';">'

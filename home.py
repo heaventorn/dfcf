@@ -59,8 +59,8 @@ def _market_payload(data):
 
     label, desc = "", ""
     try:
-        import html_report
-        label, desc = html_report.judge_market(breadth, indices)
+        from utils import judge_market
+        label, desc = judge_market(breadth, indices)
     except Exception:
         label, desc = "", ""
 
@@ -177,6 +177,13 @@ def _source_status():
         return {}
 
 
+def _window_label():
+    """时间窗文案（与 events.window_label() 保持一致）：“今日” / “近 N 天”。"""
+    if getattr(config, "NEWS_TODAY_ONLY", False):
+        return "今日"
+    return "近%d天" % int(getattr(config, "NEWS_WINDOW_DAYS", 7))
+
+
 def build_payload(data, events=None, airman_res=None, airman_refs=None,
                   portfolio_data=None, calendar_res=None, window_days=3):
     """聚合主页四个窗口所需的全部数据(纯数据,不含 HTML/JS)。"""
@@ -198,8 +205,19 @@ def build_payload(data, events=None, airman_res=None, airman_refs=None,
         "meta": {
             "events": len(events or []),
             "window_days": window_days,
+            "window_label": _window_label(),
             "output_dir": config.OUTPUT_DIR,
             "sources": _source_status(),
+            # 实时新闻：前端按 poll_seconds 轮询 /api/news，后端每 refresh_seconds 秒重抓
+            "live": {
+                "poll_seconds": int(getattr(config, "NEWS_POLL_SECONDS", 60)),
+                "refresh_seconds": int(getattr(config, "NEWS_REFRESH_SECONDS", 300)),
+                "feed_rows": int(getattr(config, "NEWS_FEED_ROWS", 300)),
+                "limit": int(getattr(config, "NEWS_LIMIT", 1000)),
+                "window_days": int(getattr(config, "NEWS_WINDOW_DAYS", 7)),
+                "today_only": bool(getattr(config, "NEWS_TODAY_ONLY", False)),
+                "api": "/api/news",
+            },
         },
     }
 
@@ -769,7 +787,7 @@ HOME_JS = r"""
           });
         }
         world.pointsData(arr);
-        world.ringsData(arr);
+        world.ringsData([]);   // 涟漪已关闭（数据置空即不渲染任何环）
         world.labelsData(arr.filter(function (d) { return d.count > 1; }));
       } catch (e) {}
     }
@@ -777,7 +795,7 @@ HOME_JS = r"""
     function newsSorted() {
       return (EVENTS || []).slice().sort(function (a, b) {
         return String(b.time || '').localeCompare(String(a.time || ''));
-      }).slice(0, 60);
+      }).slice(0, (HOME.meta && HOME.meta.feed_rows) || 300);
     }
     function newsRow(it, key) {
       var kc = it.kind === '突发' ? 'kb' : 'kn';
@@ -801,8 +819,9 @@ HOME_JS = r"""
       var hits = list.length;
       var S = (HOME.meta || {}).sources || {}, sp = [];
       Object.keys(S).forEach(function (k) { sp.push(k + (S[k] < 0 ? ' ✕' : ' ' + S[k])); });
-      var srcTxt = sp.length ? '<div class="hintxt" style="margin:2px 0 0">信源:' + sp.join(' · ') + '</div>' : '';
-      h += '<div class="sec2">📰 近 ' + ((HOME.meta || {}).window_days || 3) + ' 天事件(' +
+      var liveAt = (HOME.meta && HOME.meta.live_at) ? ' · ⟳ ' + esc(HOME.meta.live_at) + ' 已更新' : '';
+      var srcTxt = sp.length ? '<div class="hintxt" style="margin:2px 0 0">信源:' + sp.join(' · ') + liveAt + '</div>' : '';
+      h += '<div class="sec2">📰 ' + esc((HOME.meta || {}).window_label || '近3天') + '事件(' +
            (EVENTS || []).length + ' 条)</div>' + srcTxt;
       list.forEach(function (e, i) { h += newsRow(e, 'ev:' + i); });
       if (!hits) {
@@ -1089,6 +1108,54 @@ HOME_JS = r"""
     renderAssets();
     renderAir();
     window.__applyMapFilter = applyMapFilter;
+
+    // ---------- 实时新闻推送(Live) ----------
+    // 后端 live_server.py 每 NEWS_REFRESH_SECONDS 秒重抓一次全球新闻；这里按
+    // meta.live.poll_seconds 轮询 /api/news，用版本号比对，有变化才增量刷新：
+    //   EVENTS / HOT / groups 换成新的 → 重设地球光点 → renderNews() 重画新闻栏。
+    // 整页不重新加载，地球贴图不会重下，视觉上无闪烁。
+    function liveApply(pack) {
+      try {
+        if (!pack || !pack.version) { return; }
+        if (pack.events) { EVENTS = pack.events; }
+        if (pack.hot) { HOT = pack.hot; }
+        if (pack.groups) {
+          groups = pack.groups;
+          multiGroups = groups.filter(function (d) { return d.count > 1; });
+        }
+        if (pack.sources) { HOME.meta.sources = pack.sources; }
+        HOME.meta.live_at = (pack.asof || '').slice(11, 16) || new Date().toTimeString().slice(0, 5);
+        HOME.meta.events = (EVENTS || []).length;
+        try {
+          world.pointsData(groups).ringsData([]).labelsData(multiGroups);
+        } catch (e) {}
+        renderNews();          // 内部会再调 applyMapFilter()，光点与列表一起更新
+      } catch (e) {
+        if (window.console) { console.warn('[live] 增量刷新失败:', e); }
+      }
+    }
+    window.__liveRefresh = liveApply;
+
+    var LIVE_VER = 0;
+    function pollLive() {
+      try {
+        if (!window.fetch) { return; }
+        if (location.protocol !== 'http:' && location.protocol !== 'https:') { return; }
+        var api = (HOME.meta && HOME.meta.live && HOME.meta.live.api) || '/api/news';
+        fetch(api + '?ver=' + LIVE_VER, { cache: 'no-store' }).then(function (r) {
+          return r.ok ? r.json() : null;
+        }).then(function (j) {
+          if (!j || !j.version || j.version === LIVE_VER) { return; }
+          LIVE_VER = j.version;
+          if (!j.unchanged) { liveApply(j); }
+        }).catch(function () { /* 服务未启动时静默降级 */ });
+      } catch (e) {}
+    }
+    if (window.fetch && (location.protocol === 'http:' || location.protocol === 'https:')) {
+      var pollSec = (HOME.meta && HOME.meta.live && HOME.meta.live.poll_seconds) || 60;
+      setInterval(pollLive, Math.max(15, pollSec) * 1000);
+      setTimeout(pollLive, 4000);
+    }
   })();
 """
 
