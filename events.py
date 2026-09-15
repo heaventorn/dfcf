@@ -1304,32 +1304,6 @@ def build_page(events, out_path):
     return out_path
 
 
-def build_detail_page(events, meta, out_path, assets_prefix="assets/"):
-    """生成 detail 页:顶部显示空中飞人指数概要(meta),主体为 3D 真实事件地球。
-
-    meta: {"total": float, "level": str, "color": "#hex", "time": str,
-           "report": "daily_report_xxx.html"}  # report 为返回主报告的相对文件名(同目录),可省略
-    """
-    col = meta.get("color") or "#e8963a"
-    total = meta.get("total")
-    total_txt = f"{total:.0f}" if isinstance(total, (int, float)) else "?"
-    sub = ('空中飞人指数 ' + total_txt + ' 分 · ' + str(meta.get("level") or "?") +
-           '（测算 ' + str(meta.get("time") or "") + '）· ' + window_label() + ' 事件 '
-           + str(len(events)) + ' 条')
-    badge = ('<div style="margin-top:10px;"><span style="display:inline-block;padding:4px 14px;'
-             'border-radius:999px;color:#fff;font-weight:700;font-size:13px;background:' + col + ';">'
-             + total_txt + ' · ' + str(meta.get("level") or "") + '</span></div>')
-    title = ('<div class="hud" id="title">'
-             '<h1>🌍 全球宏观事件 · 3D 地图</h1>'
-             '<div class="sub">' + sub + '</div>' + badge + '</div>')
-    back = ('<div class="hud" id="back"><a href="' + meta["report"] + '">← 返回综合报告</a></div>'
-            if meta.get("report") else "")
-    html = _assemble(events, title + back, assets_prefix=assets_prefix)
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html)
-    return out_path
-
-
 if __name__ == "__main__":
     from collections import Counter
     evs = fetch_events(limit=120)

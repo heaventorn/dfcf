@@ -137,26 +137,6 @@ def _positions_payload(portfolio_data):
     }
 
 
-def _assets_payload(portfolio_data):
-    """右上窗口之二(旧):配置标的行情(固收 / 逆回购 / 高成长基金 / 纳指标普 ETF)。
-
-    主页已改用 _watchlist_payload()，本函数保留供回退（数据仍由 collect_all 采集）。
-    """
-    pd = portfolio_data or {}
-    fi = pd.get("fixed_income") or {}
-    hr = pd.get("high_risk") or {}
-    return {
-        "fixed": [{"name": _s(x.get("name")), "kind": _s(x.get("kind")),
-                   "price": _s(x.get("price")), "pct": x.get("pct")} for x in (fi.get("etfs") or [])],
-        "repos": [{"name": _s(x.get("name")), "kind": _s(x.get("kind")),
-                   "price": _s(x.get("price")), "pct": x.get("pct")} for x in (fi.get("repos") or [])],
-        "funds": [{"name": _s(x.get("name")), "nav": _s(x.get("nav")), "pct": x.get("pct"),
-                   "nav_date": _s(x.get("nav_date"))} for x in (hr.get("funds") or [])],
-        "qdii": [{"name": _s(x.get("name")), "price": _s(x.get("price")), "pct": x.get("pct")}
-                 for x in (hr.get("etfs") or [])],
-    }
-
-
 def _watchlist_payload(portfolio_data):
     """右上窗口之二:「我的自选」——按 etf / stock / other 三组给行情。
 
@@ -249,7 +229,6 @@ def build_payload(data, events=None, airman_res=None, airman_refs=None,
         "calendar": calendar_res or {},
         "positions": _positions_payload(portfolio_data),
         "watchlist": _watchlist_payload(portfolio_data),
-        "assets": _assets_payload(portfolio_data),   # 旧的「配置标的行情」,主页已不再渲染
         "airman": _airman_payload(airman_res, airman_refs),
         "meta": {
             "events": len(events or []),
@@ -1487,7 +1466,8 @@ if __name__ == "__main__":
           "| 连板:", pl["market"]["limit_up"]["top"][:3])
     print("个股榜前3:", [(x["name"], x["pct"]) for x in pl["market"]["stock_up"][:3]])
     print("持仓:", {k: v for k, v in pl["positions"].items() if k != "items"})
-    print("资产条数:", {k: len(v) for k, v in pl["assets"].items()})
+    print("自选:", [(g["label"], len(g["rows"])) for g in pl["watchlist"]["groups"]],
+          "| 合计", pl["watchlist"]["total"])
     print("飞人:", {k: v for k, v in pl["airman"].items() if k != "signals"})
     print("日历来源:", (pl["calendar"] or {}).get("source"),
           "| 今日条数:", ((pl["calendar"] or {}).get("days") or [{}])[0].get("total"))

@@ -13,7 +13,6 @@ output/
 cookies.json
 
 # ===== 本地临时 / 调试文件 =====
-_pyramid_preview.html
 # Edge --app 独立窗口模式用的专用 profile（由 main.py 创建）
 .edge_profile/
 _probe_em.py
@@ -44,6 +43,3 @@ assets/fonts/
 assets/geo/
 # 预览页(由 events.py 生成,不入库)
 events_live.html
-# 已弃用的大贴图:云层/昼夜效果已移除(本地保留,不入库)
-assets/earth8k_clouds.jpg
-assets/earth8k_night.jpg

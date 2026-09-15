@@ -139,8 +139,8 @@ def load_cookies():
 
     实测：东财行情域（push2.eastmoney.com）若收到携带过期 / 无效登录 Cookie 的请求，
     会直接断开连接（RemoteDisconnected），表现为「em 数据异常（网络错误(ConnectionError)）」；
-    去掉 Cookie 后请求正常。因此行情会话默认不带 Cookie，确实需要登录态的接口可显式：
-        apply_cookies(_em_sess)
+    去掉 Cookie 后请求正常。因此行情会话默认不带 Cookie；Cookie 只在这里存进
+    `_cookie_jar` 备用，将来真出现需要登录态的接口，再从这个 jar 往对应会话注入。
     """
     try:
         with open(config.COOKIE_FILE, "r", encoding="utf-8") as f:
@@ -150,13 +150,6 @@ def load_cookies():
         return True
     except Exception:
         return False
-
-
-def apply_cookies(sess):
-    """把已载入的登录 Cookie 注入指定会话（仅限确实需要登录态的接口）。"""
-    if _cookie_jar:
-        sess.cookies.update(_cookie_jar)
-    return sess
 
 
 # 风控特征文本（命中即视为数据异常，触发切源）
@@ -968,37 +961,6 @@ def get_realtime_quotes(codes):
 
     _, data = fetch("实时行情", [("tx", _q_tx), ("sina", _q_sina)], validate=_valid)
     return data or {}
-
-
-def get_us_quotes(codes):
-    """美股实时行情（腾讯源）。
-
-    codes 形如 [usNVDA, usGOOGL]（us + 股票代码）。
-    注意：美股在新浪为独立格式（gb_ 前缀），不做新浪兜底，仅腾讯源。
-    腾讯返回的行情 code 字段形如 NVDA.OQ，这里按股票代码前缀匹配后，
-    按传入顺序返回 [{code, name, price, pct}]。
-    """
-    def _q_tx():
-        q = _tx_parse_quotes(codes)
-        out = []
-        for c in codes:
-            base = c[2:] if c.startswith("us") else c  # usNVDA -> NVDA
-            hit = None
-            for k, v in q.items():
-                if k.split(".")[0] == base:
-                    hit = v
-                    break
-            if hit:
-                out.append({"code": base, "name": hit.get("name"),
-                            "price": hit.get("price"), "pct": hit.get("pct")})
-        return out
-
-    def _valid(d):
-        return len(d) >= 1 and any(x and x.get("price") is not None for x in d)
-
-    _, data = fetch("美股行情", [("tx", _q_tx)], validate=_valid)
-    return data or []
-
 
 def get_kline(tx_code, secid):
     """日线K线（腾讯主源 / 东财 / 新浪兜底）。

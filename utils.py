@@ -7,8 +7,6 @@
 
 import requests
 
-import config
-
 
 def to_float(v):
     """安全转 float；空 / 停牌（"-"）/ 非法值返回 None。"""
@@ -18,27 +16,6 @@ def to_float(v):
         return float(v)
     except (TypeError, ValueError):
         return None
-
-
-def fmt_price(v, digits=2):
-    """价格 / 金额格式化（保留 digits 位小数）；空值 / 非法值返回 "-"。"""
-    if v is None:
-        return "-"
-    try:
-        return f"{float(v):.{digits}f}"
-    except (TypeError, ValueError):
-        return "-"
-
-
-def fmt_pct(v, signed=True):
-    """百分比格式化，默认带正负号（如 +1.23%）；空值 / 非法值返回 "-"。"""
-    if v is None:
-        return "-"
-    try:
-        v = float(v)
-        return f"{v:+.2f}%" if signed else f"{v:.2f}%"
-    except (TypeError, ValueError):
-        return "-"
 
 
 def judge_market(breadth, indices):

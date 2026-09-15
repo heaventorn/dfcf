@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """多源适配层功能测试（实际请求，验证解析与自动切源）。"""
-import json
 import sources
 
 print("=" * 60)

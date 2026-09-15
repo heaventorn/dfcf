@@ -17,13 +17,13 @@
 - **实时新闻推送**（`live_server.py`）：脚本启动后自动在后台拉起，**每 5 分钟**重抓一次全球新闻（东财 7x24 / 华尔街见闻 / 财联社 / 金十 / 同花顺 / 新浪 7x24）；主页按版本号轮询 `/api/news`，有新内容就**增量刷新地球光点与新闻栏**（不整页重载、不重新下载贴图）；关掉启动脚本窗口时服务随之退出
 - **新闻可跳原文**：新闻栏与详情面板里的标题都是链接（新窗口打开原站），六个信源在抓取时都保留了原文地址；点条目的**其余位置**仍是原有的「飞向地球光点 + 展开详情」，互不干扰
 - **我的自选**（主页右上方窗口）：自己维护的标的清单，分 **ETF / 股票 / 其他** 三组（存 `watchlist.json`）。**只跟行情——不记成本、不算盈亏**（那是「我的持仓」的事）。在持仓管理页 `http://127.0.0.1:8765` 的「📌 自选管理」标签填个代码就能加入；场内 ETF/股票取实时价，场外基金取净值（带净值日），国债逆回购显示的是年化利率
-- **个人组合监控**：覆盖家庭组合三类资产——低风险固收（货币/国债/短债ETF + 国债逆回购）、红利低波 ETF、美股高成长（英伟达/谷歌）
+- **个股终端**（`stock.py` + `stock.html`）：主页里点持仓/自选任意一行 → **同一个窗口**进入个股页（详细报价 / 五档盘口 / 分时含均价 / 日K / 月K / 均线·BOLL 指标切换 / 量能 / MACD），返回键或 Esc 回主页。后台按 **3.5s / 60s / 300s** 分档刷新，**同一只票合并请求**（多开标签页也只打一次上游），**收盘、午休、周末自动停刷**，页面关掉 60 秒后连后台也不再为它抓数
 
 ## 环境要求
 
 - Windows / macOS / Linux
-- Python 3.9+（开发环境为 3.13）
-- 依赖：见 `requirements.txt`（`requests`、`pandas`、`numpy`、`matplotlib`、`playwright`、`argon2-cffi`）
+- Python 3.12（实测 3.12.10；3.10+ 基本可用）
+- 依赖：见 `requirements.txt`（`requests`、`pandas`、`numpy`、`playwright`、`argon2-cffi`；`Pillow` 可选，装了会给主页内嵌贴图降采样）
 
 ## 安装
 
@@ -115,22 +115,18 @@ dfcf-main/
 ├── home.py                  # 主页数据聚合与页面生成
 ├── events.py                # 全球宏观事件采集 + 地球页资源
 ├── geo.py / feeds.py        # 地名归因 / 快讯源
-├── portfolio.py             # 个人组合监控 + 我的自选行情（tech.py / kchart.py / agents.py 配合）
-├── live_server.py           # 主页 + 实时新闻服务（127.0.0.1:8766，静态发布 + /api/news）
+├── portfolio.py             # 持仓 / 自选行情采集（positions.json / watchlist.json）
+├── kchart.py                # K线（日/周/月，前复权）与分时取数 + MA/BOLL/MACD 指标
+├── stock.py                 # 个股终端数据层 + StockHub 后台分档刷新（含离线自检 CLI）
+├── stock.html               # 个股终端页面（分时 / 日K / 月K + 指标切换 + 五档盘口）
+├── live_server.py           # 常驻服务（127.0.0.1:8766：主页静态发布 + /api/news + /api/stock + /stock 个股页）
 ├── position_manager.py      # 持仓 / 自选管理本地服务（127.0.0.1:8765）
 ├── positions.json           # 我的持仓（代码 / 成本 / 数量；用来算市值与盈亏）
 ├── watchlist.json           # 我的自选（只跟行情、不记成本；ETF / 股票 / 其他 三组）
-├── serve_page.py            # 纯静态服务（已被 live_server.py 取代，保留备用）
-├── static_assets.py         # 静态资源加载器（读取并缓存 static/ 下的 css / js）
-├── static/                  # 前端资源（改样式只动这里，不必碰 Python）
 ├── config.py                # 配置（指数、板块、多源冷却、网络重试、Cookie 路径等）
 ├── utils.py                 # 公共工具（格式化 / 类型转换 / 市场情绪判断）
 ├── requirements.txt         # 依赖清单
 ├── test_sources.py          # 多源适配层冒烟测试（联网；python test_sources.py）
-├── migrate_inline_assets.py # 一次性迁移：把内联 CSS/JS/HTML 外置到 static/
-├── verify_p1_sources.py     # 离线验证：多源健壮性（切源 / 冷却 / 风控 / 重试）
-├── verify_p2_history.py     # 离线验证：历史快照落库与查询
-├── verify_p8_static.py      # 离线验证：外置后产物与重构前逐字节一致
 └── output/                  # 输出目录（自动创建）
 ```
 
@@ -146,6 +142,9 @@ dfcf-main/
 | 财经快讯 | 东财 newsapi | 新浪 7x24 | | |
 | 历史K线 | 腾讯 ifzq | 东财 push2his | 新浪 | |
 | 实时行情（ETF） | 腾讯 qt.gtimg | 新浪 hq.sinajs | | |
+| 个股详细报价（含五档 / 市值 / 涨跌停 / 均价） | 腾讯 qt.gtimg | 东财 push2（多盘后固定价格） | | |
+| 个股当日分时（含均价） | 东财 trends2 | 腾讯 ifzq minute | | |
+| 个股前复权K线（日/周/月） | 腾讯 ifzq | 东财 push2his | | |
 | 分红记录 | 天天基金 fundf10 | （偶发空数据自动重试 3 次） | | |
 
 **三层容错**（由内到外）：
@@ -173,31 +172,45 @@ dfcf-main/
   push2delay 延迟镜像 / 腾讯 / 新浪；若多个数据源均异常才可能为空，稍等 15~30 分钟重跑即可。
 - **登录后 Cookie 失效**：Cookie 有时效，失效时删除 `cookies.json` 后重新执行 `python main.py` 即可重新扫码。
 - **浏览器未弹出**：确认已执行 `python -m playwright install chromium`（建议用国内镜像）。
-- **新闻没在动 / 看不到自动刷新**：确认 8766 端口上跑的是 `live_server.py`（而不是旧的
-  `serve_page.py`）。浏览器访问 http://127.0.0.1:8766/api/health 应返回 JSON；
-  若 404 说明旧服务还占着端口，关掉旧窗口重跑启动脚本即可。
+- **新闻没在动 / 看不到自动刷新**：确认 8766 端口上跑的是 `live_server.py`。
+  浏览器访问 http://127.0.0.1:8766/api/health 应返回 JSON；
+  若 404 说明有别的程序占着端口，关掉旧窗口重跑启动脚本即可。
+- **主页点持仓行没反应 / 个股页打不开**：主页是生成产物，改动代码后要重跑一次
+  `启动爬虫.bat`；个股页需要 8766 服务在跑（`/api/stock`）。
+- **个股页某块显示「—」**：那一块数据源降级了，看 `/api/stock/health` 的 `errors`
+  与 `/api/health`；逆回购 / 场外基金本身没有分时与 K 线，主页里也不给入口。
 
-## 变更说明（本次重构）
+## 版本与近期变更
 
-- **实时新闻推送**（新增 `live_server.py`）：启动脚本会后台拉起「主页 + 实时新闻」服务，
-  每 5 分钟自动重抓一次全球新闻，并通过 `/api/news` 让主页**增量刷新**地球光点与新闻栏。
-  服务**继承启动脚本的 console**，因此关掉窗口会一起退出（不再留下关不掉的孤儿进程）。
-  刷新间隔见 `config.NEWS_REFRESH_SECONDS`，前端轮询间隔见 `config.NEWS_POLL_SECONDS`。
-  手动预览：`python live_server.py --once`（抓一次写 `output/live_news.json`）、
-  `python live_server.py --interval 60`（改成 1 分钟刷新）。
+当前版本 **v3.2.0**：三块功能（主页 3D 地球指挥台 / 个股终端 / 持仓·自选管理）+ 一条数据链，
+常驻服务是**一个进程托管两个端口**（8766 主页·新闻·个股；8765 持仓自选）。
 
-- **多源健壮性**：新增连接级重试与环境代理支持；风控关键词判定收窄到 HTML 响应；
-  代码缺陷不再被当作来源故障静默吞掉（会进健康报告）。
-- **历史快照**：新增 `history.py`，每轮采集落一条 SQLite 快照（`output/history.db`），
-  支持趋势与环比查询（`python history.py`）。
-- **前端资源外置**：CSS / JS / HTML 从 Python 模块搬到 `static/`。执行一次
-  `python migrate_inline_assets.py` 完成迁移（脚本对每个资源做「写入 → 回读」
-  逐字节校验，产物不变）；之后改配色 / 布局 / 图表样式只需编辑 `static/` 下的文件。
-- **目录清理**：移除已无调用者的旧「综合报告」链路 —— `dividend.py` 与 `html_report.py`
-  （其中仍被使用的 `judge_market` 已迁到 `utils.py`）。原文件保留在 `_refactor_backup/`
-  以备回滚。
-- **验证脚本**：`verify_p1_sources.py` / `verify_p2_history.py` / `verify_p8_static.py`
-  为离线验证脚本（不联网、不写项目数据），可自证上述改动。
+- **v3.2.0 个股终端**：新增 `stock.py`（数据层 + `StockHub` 分档刷新 + 离线自检）与
+  `stock.html`（分时 / 日K / 月K + 均线·BOLL 切换 + 量能 + MACD + 五档盘口）；
+  主页持仓/自选点行进个股页（同窗口，返回键或 Esc 回主页）；`live_server.py` 新增
+  `/api/stock`、`/api/stock/health`、`/stock` 路由与 `--with-positions`
+- **v3.1.x**：我的自选（`watchlist.json` + 管理页「自选管理」标签）、新闻标题可跳原文、
+  主页与地球页深色设计令牌统一、贴图内嵌 data URL（`file://` 直开不再黑球）
+- **v3.1.0**：`live_server.py` 实时新闻推送（每 5 分钟增量刷新）、`history.py` 历史快照
+- **v3.0.0**：3D 地球指挥台主页 + 多信源 + 交互式行情图
+
+**代码清理（2026-09）**：删掉所有已无调用者的链路 ——
+旧「家庭投资组合」写死清单（固收 / 高成长 / 纳指标普 ETF，以及它们每轮白跑的采集）、
+`agents.py` + `llm_config.py`（多 Agent 辩论，从未启用）、`events.build_detail_page`、
+`sources.apply_cookies` / `get_us_quotes`、`kchart` 的 matplotlib 出图链
+（连带去掉 matplotlib 依赖）、`portfolio.generate_report_section` / `generate_report` /
+`save_report` 及那份 HTML 报告片段、`serve_page.py`、`globe_proto.html`、
+`static_assets.py`、`migrate_inline_assets.py`、三个 `verify_p*.py`（写死了原作者机器路径，
+在本机跑不起来）与 715KB 无人引用的 `assets/earth-night.jpg`。
+
+自检入口（都不动正式产物）：
+
+```bash
+py -3.12 stock.py              # 个股数据层离线自检
+py -3.12 stock.py --hub-test   # 后台刷新四条不变量
+py -3.12 home.py --probe       # 主页探针 → output/_home_probe.html
+py -3.12 test_sources.py       # 数据源冒烟（联网）
+```
 
 ## 合规与免责
 
