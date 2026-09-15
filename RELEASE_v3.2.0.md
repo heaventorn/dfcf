@@ -94,6 +94,43 @@
 
 ---
 
+## 代码清理（随本版一起发布）
+
+发布后紧接着做了一轮死代码清理，**版本号不变**（仍是 v3.2.0），内容如下。
+
+**删除的文件（10 个）**
+
+| 文件 | 原因 |
+|---|---|
+| `agents.py` + `llm_config.py` | 多 Agent 辩论链；`portfolio.py` 只 `import agents` 从未调用，等于每次启动白加载一个 LLM 模块 |
+| `globe_proto.html` | 1.9MB 地球原型，无任何引用 |
+| `assets/earth-night.jpg` | 715KB，昼夜效果移除后再无引用 |
+| `serve_page.py` | 旧静态服务，早已被 `live_server.py` 取代 |
+| `static_assets.py` + `migrate_inline_assets.py` | v3.1.0 的「前端资源外置到 static/」方案后来回退成内联，`static/` 目录并不存在 |
+| `verify_p1_sources.py` / `verify_p2_history.py` / `verify_p8_static.py` | 写死了原作者的机器路径（`C:\Users\Admin\...`），在本机跑不起来 |
+
+**删除的代码**
+
+| 位置 | 内容 |
+|---|---|
+| `portfolio.py` | 旧「家庭投资组合」写死清单（固收 / 高成长 / 纳指标普 ETF）、它们**每轮白跑的两次采集**、旧 HTML 报告片段（`generate_report_section` / `generate_report` / `save_report`）；654 → 262 行 |
+| `home.py` | `_assets_payload`（旧「配置标的行情」窗口的数据）与 `payload["assets"]` |
+| `events.py` | `build_detail_page`（独立 detail 页，无人调用） |
+| `sources.py` | `apply_cookies` / `get_us_quotes` |
+| `kchart.py` | matplotlib 出图链（三个函数），`__main__` 改为日/周/月 K 线 + 分时冒烟 |
+| `utils.py` | `fmt_price` / `fmt_pct`（仅旧报告使用） |
+| 多处 | 4 处历史遗留的未使用 import（`re` / `time` / `pd` / `json` / `config`） |
+
+**收益**：仓库跟踪文件 56 → 46；净减 2249 行；`requirements.txt` 去掉 `matplotlib` 依赖；
+每轮运行少 4 组无用网络请求（固收 ETF、高成长基金净值、纳指标普 ETF、美股行情），
+启动更快、也更不容易触发数据源限流。
+
+**验证**：21 个 `.py` 全部 `py_compile` 通过；AST 扫描无未使用导入、无无人调用的顶层函数；
+全部模块 import 成功；`stock.py` 与 `--hub-test` 自检通过；`home.py --probe` 正常；
+`main.py --no-login` 完整管线跑通（重新生成主页 + 落历史快照）。
+
+---
+
 ## 升级须知
 
 - **无需安装新依赖**：Pillow 仍是可选（装了会对主页内嵌贴图降采样，没装功能一致）
