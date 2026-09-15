@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -634,12 +635,30 @@ class Handler(BaseHTTPRequestHandler):
         pass  # 静默日志
 
 
+def make_server(port=None):
+    """只建服务对象、不阻塞启动（给「同一进程里同时托管多个端口」用）。"""
+    return ThreadingHTTPServer(("127.0.0.1", port or PORT), Handler)
+
+
+def serve_in_thread(port=None):
+    """在后台线程里跑持仓管理服务，返回 server 对象（调用方负责 shutdown）。
+
+    与 main() 的区别只有「不阻塞主线程」：v3.2 起 8765 与 8766 由同一个进程托管，
+    启动时只多一个控制台窗口（之前是两个），关掉窗口两个服务一起退出。
+    端口已被占用时抛 OSError，由调用方决定是否降级 —— 这里不吞异常。
+    """
+    server = make_server(port)
+    threading.Thread(target=server.serve_forever, name="position-manager",
+                     daemon=True).start()
+    return server
+
+
 def main():
     # 启动前检查 positions.json 是否存在
     if not os.path.exists(POS_FILE):
         print("[错误] 找不到 positions.json：", POS_FILE)
         sys.exit(1)
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = make_server()
     print("=" * 52)
     print("  个人投资组合 · 持仓管理已启动")
     print(f"  请在浏览器打开： http://127.0.0.1:{PORT}")

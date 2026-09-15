@@ -572,13 +572,18 @@ def _em_news(limit):
     } for x in lives]
 
 
-def _em_kline(secid, adj):
-    """东财日线K线（klt=101；adj: qfq前复权 / bfq不复权）。"""
+def _em_kline(secid, adj, klt=101, beg="20200101"):
+    """东财K线（adj: qfq前复权 / bfq不复权）。
+
+    klt 周期码：101=日 / 102=周 / 103=月（个股终端切周期时传）；
+    beg 起始日：日线要 2020 年起（算 MA144 够用），月线得放到 2000 年，
+    否则东财只回零头几根，指标全废。
+    """
     data = _req_json(_em_sess, "https://push2his.eastmoney.com/api/qt/stock/kline/get",
                      params={"secid": secid, "fields1": "f1,f2,f3,f4,f5,f6",
                              "fields2": "f51,f52,f53,f54,f55,f56,f57",
-                             "klt": 101, "fqt": 1 if adj == "qfq" else 0,
-                             "beg": "20200101", "end": "20261231"})
+                             "klt": klt, "fqt": 1 if adj == "qfq" else 0,
+                             "beg": beg, "end": "20261231"})
     klines = ((data or {}).get("data") or {}).get("klines") or []
     if len(klines) < 30:
         raise _empty("K线不足")
@@ -1032,4 +1037,268 @@ def get_dividends(code):
     3 轮仍为空则按数据源真实情况处理（该基金暂无分红记录）。"""
     _, data = fetch(f"分红({code})", [("fund10", lambda: _fund10_dividends(code))],
                     validate=lambda d: len(d) >= 1, rounds=3)
+    return data or []
+
+
+# ================================================================ 个股详情（报价 / 分时 / 多周期K线）
+#
+# 这一层是给「个股终端页」用的，和 get_realtime_quotes 的区别在字段覆盖度：
+# 报价要一次拿到五档盘口 / 市值 / 市盈 / 涨跌停 / 均价 / 量比，K线要能切周期。
+# 三个 getter 全部挂到 fetch() 注册表上，白拿主备切换与冷却退避 —— 实测东财 push2
+# 在连续探测后会出现「连接被直接掐断」，腾讯 qt 仍然正常，这正是必须有兜底源的理由。
+
+
+def to_secid(tx_code):
+    """sh600941 → 1.600941；sz000001 → 0.000001（东财 secid：1=沪市 / 0=深市+北交所）。"""
+    code = str(tx_code or "").strip()
+    if "." in code:
+        return code
+    if code.startswith("sh"):
+        return "1." + code[2:]
+    if code.startswith(("sz", "bj")):
+        return "0." + code[2:]
+    return "1." + code if code[:1] in ("6", "5", "9") else "0." + code
+
+
+# ---- 腾讯 qt 的字段下标 ----
+# 这条接口返回的是一串 ~ 分隔、**没有字段名**的值，含义只能钉在这里。
+# 实测对照东财 App（2026-09-15 中国移动 600941）逐项核对过：
+#   3=现价 4=昨收 5=今开 6=成交量(手) 7=外盘 8=内盘 9~18=买一~买五(价,量交替)
+#   19~28=卖一~卖五 30=时间 31=涨跌额 32=涨跌幅% 33=最高 34=最低 36=成交量(手)
+#   37=成交额(万) 38=换手率% 39=市盈(静) 43=振幅% 44=流通市值(亿) 45=总市值(亿)
+#   46=市净率 47=涨停价 48=跌停价 49=量比 51=均价 52=市盈(动) 53=市盈(TTM)
+_TX_I = {
+    "name": 1, "code": 2, "price": 3, "prev_close": 4, "open": 5, "volume_shou": 6,
+    "outer": 7, "inner": 8, "time": 30, "change": 31, "pct": 32, "high": 33, "low": 34,
+    "amount_wan": 37, "turnover": 38, "pe_static": 39, "amplitude": 43,
+    "float_cap_yi": 44, "market_cap_yi": 45, "pb": 46, "limit_up": 47, "limit_down": 48,
+    "volume_ratio": 49, "avg_price": 51, "pe_dyn": 52, "pe_ttm": 53,
+}
+
+
+def _tx_quote_detail(codes):
+    """腾讯详细报价（主源）：一次请求拿全报价 + 五档 + 市值估值 + 涨跌停 + 均价。
+
+    返回 {code: {...}}，键见 _TX_I；bids/asks 是 [[价, 量], ...]（买一~买五 / 卖一~卖五）。
+    取不到的字段一律 None，前端按 None 显示「—」。
+    """
+    if not codes:
+        raise _empty("未指定代码")
+    text = _req_text(_tx_sess, "https://qt.gtimg.cn/q=" + ",".join(codes), encoding="gbk")
+    out = {}
+    for line in text.split(";"):
+        line = line.strip()
+        if "=" not in line or '"' not in line:
+            continue
+        p = line.split("=", 1)[1].strip().strip('"').split("~")
+        if len(p) < 60:
+            continue
+
+        def g(key):
+            i = _TX_I.get(key)
+            return _to_float(p[i]) if i is not None and i < len(p) else None
+
+        def pairs(start):
+            """五档：价量交替，0 价（无挂单）跳过。"""
+            rows = []
+            for i in range(start, min(start + 10, len(p) - 1), 2):
+                pr, vv = _to_float(p[i]), _to_float(p[i + 1])
+                if pr:
+                    rows.append([pr, vv])
+            return rows
+
+        out[p[2]] = {
+            "code": p[2], "name": p[_TX_I["name"]], "src": "tx",
+            "price": g("price"), "prev_close": g("prev_close"), "open": g("open"),
+            "high": g("high"), "low": g("low"), "change": g("change"), "pct": g("pct"),
+            "volume_shou": g("volume_shou"), "amount_wan": g("amount_wan"),
+            "turnover": g("turnover"), "amplitude": g("amplitude"),
+            "pe_dyn": g("pe_dyn"), "pe_static": g("pe_static"), "pe_ttm": g("pe_ttm"),
+            "pb": g("pb"), "market_cap_yi": g("market_cap_yi"),
+            "float_cap_yi": g("float_cap_yi"),
+            "limit_up": g("limit_up"), "limit_down": g("limit_down"),
+            "volume_ratio": g("volume_ratio"), "avg_price": g("avg_price"),
+            "outer": g("outer"), "inner": g("inner"),
+            "bids": pairs(9), "asks": pairs(19),
+            "time": p[_TX_I["time"]] if _TX_I["time"] < len(p) else "",
+            # 腾讯这条接口没有盘后固定价格（那是东财兜底源才有的字段）
+            "post_price": None, "post_volume": None, "post_amount": None,
+        }
+    if not out:
+        raise _empty("腾讯详细报价为空")
+    return out
+
+
+# ---- 东财 push2 字段（兜底源）----
+# f260/f261 是盘后固定价格的量与额，实测 2026-09-15 中国移动返回 6 / 58674，
+# 与东财 App 显示一致。f49/f50/f161（外盘/量比/内盘）与它们同批探测时 push2 正被
+# 限频、未能复验，接入时以实际返回为准 —— 拿不到就是 None，不影响其它字段。
+_EM_Q_FIELDS = ("f43,f44,f45,f46,f47,f48,f49,f50,f57,f58,f60,f116,f117,"
+                "f161,f162,f167,f168,f169,f170,f171,f260,f261")
+
+
+def _em_quote_detail(tx_codes):
+    """东财详细报价（兜底源）。比腾讯源少五档与均价，但多盘后固定价格。"""
+    out = {}
+    for tx in tx_codes:
+        data = _req_json(_em_sess, "https://push2.eastmoney.com/api/qt/stock/get",
+                         params={"secid": to_secid(tx), "fields": _EM_Q_FIELDS,
+                                 "invt": 2, "fltt": 2})
+        d = (data or {}).get("data") or {}
+        if not d or d.get("f43") in (None, "-"):
+            continue
+        amount = _to_float(d.get("f48"))
+        out[str(d.get("f57") or tx[2:])] = {
+            "code": str(d.get("f57") or tx[2:]), "name": d.get("f58") or "", "src": "em",
+            "price": _to_float(d.get("f43")), "prev_close": _to_float(d.get("f60")),
+            "open": _to_float(d.get("f46")), "high": _to_float(d.get("f44")),
+            "low": _to_float(d.get("f45")), "change": _to_float(d.get("f169")),
+            "pct": _to_float(d.get("f170")), "volume_shou": _to_float(d.get("f47")),
+            "amount_wan": (amount / 10000.0) if amount else None,
+            "turnover": _to_float(d.get("f168")), "amplitude": _to_float(d.get("f171")),
+            "pe_dyn": _to_float(d.get("f162")), "pe_static": None, "pe_ttm": None,
+            "pb": _to_float(d.get("f167")), "market_cap_yi": _to_float(d.get("f116")),
+            "float_cap_yi": _to_float(d.get("f117")), "limit_up": None, "limit_down": None,
+            "volume_ratio": _to_float(d.get("f50")), "avg_price": None,
+            "outer": _to_float(d.get("f49")), "inner": _to_float(d.get("f161")),
+            "bids": [], "asks": [], "time": "",
+            "post_price": _to_float(d.get("f43")) if d.get("f260") else None,
+            "post_volume": _to_float(d.get("f260")),
+            "post_amount": _to_float(d.get("f261")),
+        }
+    if not out:
+        raise _empty("东财详细报价为空")
+    return out
+
+
+def get_quote_detail(codes):
+    """个股详细报价（腾讯主源 / 东财兜底）。codes 形如 ["sh600941"]。
+
+    返回 {code: {...}}；两个源的字段覆盖度不同（腾讯有五档与均价，东财有盘后固定价格），
+    取不到的键为 None。整块失败返回空 dict，调用方按「这一块没数据」处理。
+    """
+    if isinstance(codes, str):
+        codes = [codes]
+    codes = [c for c in (codes or []) if c]
+    if not codes:
+        return {}
+
+    def _valid(d):
+        return any(v and v.get("price") is not None for v in (d or {}).values())
+
+    _, data = fetch("个股详细报价",
+                    [("tx", lambda: _tx_quote_detail(codes)),
+                     ("em", lambda: _em_quote_detail(codes))],
+                    validate=_valid)
+    return data or {}
+
+
+def _em_intraday(secid, ndays=1):
+    """东财当日分时（主源）。返回 {"date","pre_close","points":[{time,price,avg,vol,amount}]}。
+
+    trends2 每行：f51=时间 f52=开 f53=收 f54=高 f55=低 f56=量(手) f57=额(元) f58=均价。
+    f58 是**精确均价**（实测 600941 收盘 97.929，与东财 App 的 97.93 一致），
+    所以均价不用自己攒 ∑额/∑量 —— 那是腾讯兜底源才需要的近似算法。
+    """
+    data = _req_json(_em_sess, "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
+                     params={"secid": secid,
+                             "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+                             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+                             "iscr": 0, "ndays": ndays})
+    d = (data or {}).get("data") or {}
+    tr = d.get("trends") or []
+    if not tr:
+        raise _empty("东财分时为空")
+    points, date = [], ""
+    for row in tr:
+        parts = str(row).split(",")
+        if len(parts) < 8:
+            continue
+        stamp = parts[0].strip()            # "2026-09-15 09:30"
+        if not date and " " in stamp:
+            date = stamp.split(" ")[0]
+        points.append({"time": stamp.split(" ")[-1], "price": _to_float(parts[2]),
+                       "avg": _to_float(parts[7]), "vol": _to_float(parts[5]),
+                       "amount": _to_float(parts[6])})
+    if not points:
+        raise _empty("东财分时解析为空")
+    return {"date": date, "pre_close": _to_float(d.get("prePrice")),
+            "points": points, "src": "em"}
+
+
+def _tx_intraday(tx_code):
+    """腾讯分时（兜底源）：只有每分钟价格与量，均价只能近似。
+
+    均价准确算法是「累计成交额 / 累计成交量」，而腾讯这条接口不给成交额，
+    只能拿「当分钟价 × 当分钟量」当累计额的近似 —— 分钟内的价格波动被抹平，
+    所以这个均价只作兜底展示；主源（东财 f58）是精确值。
+    """
+    import kchart
+    m = kchart.fetch_minute(tx_code)
+    if not m:
+        raise _empty("腾讯分时为空")
+    times, prices, vols, pre_close = m
+    if not prices:
+        raise _empty("腾讯分时解析为空")
+    points, cum_amt, cum_vol = [], 0.0, 0.0
+    for i, t in enumerate(times):
+        try:
+            pr, vv = float(prices[i]), float(vols[i])
+        except (TypeError, ValueError, IndexError):
+            continue
+        cum_amt += pr * vv
+        cum_vol += vv
+        hhmm = str(t).strip().zfill(4)
+        points.append({"time": hhmm[:2] + ":" + hhmm[2:4], "price": pr,
+                       "avg": (cum_amt / cum_vol) if cum_vol else None,
+                       "vol": vv, "amount": None})
+    if not points:
+        raise _empty("腾讯分时解析为空")
+    return {"date": "", "pre_close": pre_close, "points": points, "src": "tx"}
+
+
+def get_intraday(tx_code, secid=None):
+    """当日分时（东财主源，带精确均价 / 腾讯兜底）。
+
+    返回 {"date","pre_close","points":[{time,price,avg,vol,amount}]}；整块失败返回空 points。
+    """
+    sid = secid or to_secid(tx_code)
+    _, data = fetch(f"分时({tx_code})",
+                    [("em", lambda: _em_intraday(sid)),
+                     ("tx", lambda: _tx_intraday(tx_code))],
+                    validate=lambda d: bool((d or {}).get("points")))
+    return data or {"date": "", "pre_close": None, "points": [], "src": None}
+
+
+# 周期名 → 东财 klt 码（与腾讯的 day/week/month 一一对应）
+_KLT = {"day": 101, "week": 102, "month": 103}
+
+
+def get_kline_period(tx_code, secid=None, period="day", n=None):
+    """多周期**前复权**K线（腾讯主源 / 东财兜底）。
+
+    返回按时间正序的 [{date, open, close, high, low, volume}]；不足 20 根按失败处理。
+    东财兜底的 beg 放到 2000 年：月K按 2020 年起只有零头几根，MA/BOLL 全算不出来。
+    """
+    sid = secid or to_secid(tx_code)
+    if n is None:
+        n = int(getattr(config, "STOCK_MONTH_BARS", 120) if period == "month"
+                else getattr(config, "STOCK_KLINE_BARS", 180))
+
+    def _k_tx():
+        import kchart
+        df = kchart.fetch_kline(tx_code, n, period)
+        if df is None or len(df) < 20:
+            raise _empty("腾讯K线不足")
+        return [{"date": str(r["date"])[:10], "open": float(r["open"]),
+                 "close": float(r["close"]), "high": float(r["high"]),
+                 "low": float(r["low"]), "volume": float(r["volume"])}
+                for _, r in df.iterrows()]
+
+    def _k_em():
+        return _em_kline(sid, "qfq", klt=_KLT.get(period, 101), beg="20000101")
+
+    _, data = fetch(f"K线({period},{tx_code})",
+                    [("tx", _k_tx), ("em", _k_em)],
+                    validate=lambda d: isinstance(d, list) and len(d) >= 20)
     return data or []

@@ -96,6 +96,18 @@ def _market_payload(data):
     }
 
 
+def _has_stock_page(code):
+    """这个标的有没有「个股详情页」可看。
+
+    逆回购（沪 204xxx / 深 1318xx、1319xx）没有有意义的 K 线，点进去只有一条直线；
+    场外基金没有实时行情与分时。这两类不给入口 —— 入口给了却点进去是空页，比没有更糟。
+    """
+    c = str(code or "").strip()
+    if not c:
+        return False
+    return not (c.startswith("204") or c.startswith("1318") or c.startswith("1319"))
+
+
 def _positions_payload(portfolio_data):
     """右上窗口之一:真实持仓(positions.json)。为空时给出空态提示。"""
     pos = ((portfolio_data or {}).get("positions") or {})
@@ -120,6 +132,7 @@ def _positions_payload(portfolio_data):
             "mv": x.get("mv"), "day_pnl": x.get("day_pnl"),
             "pnl": x.get("pnl"), "pnl_pct": x.get("pnl_pct"),
             "note": _s(x.get("note")),
+            "page": _has_stock_page(x.get("code")),
         } for x in items],
     }
 
@@ -163,6 +176,8 @@ def _watchlist_payload(portfolio_data):
                 "price": x.get("price"), "pct": x.get("pct"),
                 "nav_date": _s(x.get("nav_date")),
                 "is_rate": bool(x.get("is_rate")), "is_nav": bool(x.get("is_nav")),
+                # 场外基金（只有净值）不给个股页入口：那边没有分时与 K 线
+                "page": (not bool(x.get("is_nav"))) and _has_stock_page(x.get("code")),
             })
         groups.append({"key": key, "label": label, "rows": rows})
     return {
@@ -422,6 +437,19 @@ HOME_CSS = """
   .tb td { padding: 3px 2px; border-bottom: 1px solid var(--line-1); color: var(--fg-0); }
   .tb td:first-child { max-width: 118px; overflow: hidden; text-overflow: ellipsis;
                        white-space: nowrap; }
+  /* 持仓 / 自选：整行可点，跳个股详情页。行会随刷新重建，所以样式挂在 tr 上、
+     点击走容器上的事件委托（见 HOME_JS 的 bindStockRows）。 */
+  .tb tr.rowlink { cursor: pointer; }
+  .tb tr.rowlink:hover td { background: rgba(255,255,255,.025); }
+  .tb tr.rowlink:hover td:first-child { color: var(--accent); }
+  .tb tr.rowlink td:first-child::after {
+    content: "›"; color: var(--fg-3); font-size: 13px; margin-left: 5px;
+    opacity: 0; transition: opacity var(--dur-fast) var(--ease);
+  }
+  .tb tr.rowlink:hover td:first-child::after { opacity: 1; }
+  /* 行内的名字是真链接，但不显示下划线（下划线只在悬停时出现） */
+  .tb .rowlink-a { color: inherit; text-decoration: none; }
+  .tb tr.rowlink:hover .rowlink-a { text-decoration: underline; }
 
   /* ===== 行情图:改为深色(底色走 token;canvas 那层由 chartOpts 设成透明) ===== */
   #tvBox { margin-top: 8px; background: var(--bg-2); border: 1px solid var(--line-1);
@@ -652,6 +680,55 @@ HOME_JS = r"""
       return String(Math.round(v));
     }
     function stars(n) { var s = ''; for (var i = 0; i < n; i++) s += '★'; return s; }
+
+    // ---------- 个股详情页入口（持仓 / 自选点行跳转） ----------
+    // 行会随每次刷新重建，所以点击用**事件委托**挂在容器上，而不是逐行绑 onclick。
+    // 跳转走同一个窗口（不再 window.open 开一堆新窗口），个股页有返回键回到这里。
+    function stockUrl(code) {
+      // 走 8766 服务时用短地址 /stock；直接 file:// 双击打开时退回同级的 stock.html
+      var base = (location.protocol === 'file:') ? '../stock.html' : '/stock';
+      return base + '?code=' + encodeURIComponent(code);
+    }
+    function stockRowOpen(x) {
+      // 后端已经判过「有没有详情页可看」（逆回购 / 场外基金不给入口）
+      return (x && x.page && x.code)
+        ? '<tr class="rowlink" data-stock="' + esc(x.code) +
+          '" title="点击查看个股详情（Ctrl / 中键可开新标签）">'
+        : '<tr>';
+    }
+    function stockNameCell(x, name) {
+      // 名字做成真链接：中键 / Ctrl+点击 仍能开新标签（普通点击才走同窗口跳转）
+      return (x && x.page && x.code)
+        ? '<a class="rowlink-a" href="' + stockUrl(x.code) + '">' + esc(name) + '</a>'
+        : esc(name);
+    }
+    function bindStockRows(boxId) {
+      var box = $(boxId);
+      if (!box) return;
+      box.addEventListener('click', function (ev) {
+        // 点在链接上就交给浏览器处理（中键、Ctrl+点击、右键「新标签打开」都还在）
+        var el = ev.target;
+        while (el && el !== box) {
+          if (el.tagName && el.tagName.toLowerCase() === 'a') return;
+          el = el.parentNode;
+        }
+        el = ev.target;
+        while (el && el !== box) {
+          if (el.getAttribute && el.getAttribute('data-stock')) {
+            var u = stockUrl(el.getAttribute('data-stock'));
+            // 带修饰键时按老习惯开新标签（点名字链接时浏览器自己会处理）
+            if (ev.ctrlKey || ev.metaKey || ev.shiftKey) {
+              var w = window.open(u, '_blank');
+              if (!w) location.href = u;      // 弹窗被拦就退回同窗口，别让这一下白点
+            } else {
+              location.href = u;
+            }
+            return;
+          }
+          el = el.parentNode;
+        }
+      });
+    }
 
     // ---------- 数字入场动效(工具) ----------
     // 系统是否要求"减少动态效果":CSS 侧已用媒体查询关掉动画,这里给 JS 侧一个判据
@@ -1048,7 +1125,7 @@ HOME_JS = r"""
               fmtY(P.total_day) + '</span></div>';
       h += '<table class="tb"><tbody>';
       (P.items || []).forEach(function (x) {
-        h += '<tr><td>' + esc(x.name) + '</td><td>' + (x.price || '-') + '</td>' +
+        h += stockRowOpen(x) + '<td>' + stockNameCell(x, x.name) + '</td><td>' + (x.price || '-') + '</td>' +
              '<td class="' + cls(x.day_pnl) + '">' + fmtY(x.day_pnl) + '</td>' +
              '<td class="' + cls(x.pnl) + '">' + fmtY(x.pnl) + '</td></tr>';
       });
@@ -1085,7 +1162,7 @@ HOME_JS = r"""
                     : (x.is_rate ? esc(String(x.price)) + '%' : esc(String(x.price)));
           var sub = x.kind ? '<div class="hintxt" style="font-size:10px">' + esc(x.kind) +
                              (x.is_nav && x.nav_date ? ' · 净值日 ' + esc(x.nav_date) : '') + '</div>' : '';
-          h += '<tr><td>' + esc(x.name) + sub + '</td>' +
+          h += stockRowOpen(x) + '<td>' + stockNameCell(x, x.name) + sub + '</td>' +
                '<td>' + val + '</td>' +
                '<td class="' + cls(x.pct) + '">' +
                (x.pct == null || x.pct === '' ? '-' : pctTxt(x.pct)) + '</td></tr>';
@@ -1310,6 +1387,8 @@ HOME_JS = r"""
     renderPos();
     renderWatchlist();
     renderAir();
+    bindStockRows('posBody');     // 持仓行 → 个股页
+    bindStockRows('assetsBody');  // 自选行 → 个股页
     window.__applyMapFilter = applyMapFilter;
 
     // ---------- 实时新闻推送(Live) ----------

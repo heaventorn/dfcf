@@ -105,6 +105,24 @@ NEWS_POLL_SECONDS = 60
 # 实时新闻服务端口（与主页静态服务同端口：静态文件 + /api/news 同源）
 LIVE_PORT = 8766
 
+# ---- 个股终端（stock.py 数据层 / 后续的 stock 页与后台刷新）----
+# 刷新档位：盘口/现价 3.5 秒 —— 比新闻的 5 分钟高两个数量级，因此后台必须做
+# 「同一只票 X 秒内只打一次上游」的合并，否则多开几个标签页就把上游打爆。
+STOCK_QUOTE_POLL = 3.5        # 盘口 / 现价
+STOCK_INTRADAY_POLL = 60      # 分时 + 均价（东财 trends2 是分钟粒度，不必更快）
+STOCK_KLINE_POLL = 300        # 日K / 月K（前复权；缓存按日失效，见 kchart.fetch_kline 注释）
+STOCK_FX_POLL = 3600          # 汇率（H股 / A-H 比价用，阶段 2）
+# 默认取多少根K线：月K要够长，否则 MA / BOLL 全是空值
+STOCK_KLINE_BARS = 180
+STOCK_MONTH_BARS = 120
+# 非交易时段（收盘 / 午休 / 周末）是否停掉前端定时器：只保留最后一份收盘数据
+STOCK_STOP_WHEN_CLOSED = True
+# 每只票最多同时缓存多少只（StockHub 用，防止开一堆标签页把内存撑爆）
+STOCK_CACHE_MAX = 30
+# 订阅有效期（秒）：页面最后一次读取超过这个时间就认为「没人看了」，
+# 后台不再为它抓上游 —— 否则关掉页面之后服务会一直刷到收盘
+STOCK_SUBSCRIBE_TTL = 60
+
 # 指数列表字段
 INDEX_FIELDS = "f2,f3,f4,f6,f12,f14"
 

@@ -47,7 +47,7 @@ import config
 PAGE_URL = "http://127.0.0.1:8766/output/index.html"
 
 
-def _start_bg(script, port, label):
+def _start_bg(script, port, label, extra_args=None):
     """后台拉起一个常驻服务(端口已被占用则跳过);返回是否端口就绪。
 
     刻意**不**用 CREATE_NO_WINDOW：那会给子进程新建一个独立 console，关掉启动脚本
@@ -65,7 +65,8 @@ def _start_bg(script, port, label):
             return True
 
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
-    subprocess.Popen([sys.executable, path])   # 继承 console，随启动脚本一起退出
+    cmd = [sys.executable, path] + list(extra_args or [])
+    subprocess.Popen(cmd)   # 继承 console，随启动脚本一起退出
     for _ in range(20):
         _time.sleep(0.2)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
@@ -138,19 +139,21 @@ def _build_home_page(data, airman_res, airman_refs):
 
 
 def _start_services():
-    """后台拉起持仓管理(8765)与「主页 + 实时新闻」服务(8766)；返回主页服务是否就绪。
+    """后台拉起**一个**常驻服务进程，它同时托管 8766（主页 + 实时新闻 + 个股接口）
+    与 8765（持仓管理）；返回主页服务是否就绪。
 
     主页统一走 http 而不是 file://：浏览器的 file:// 安全策略会拦截页面读取
     本地 8K 地球贴图（表现为「地球是黑球，只剩一圈亮边」）。
     8766 使用 live_server.py：同一端口既发布静态主页，也提供 /api/news
     （前端按版本号轮询，后端每 config.NEWS_REFRESH_SECONDS 秒自动重抓新闻）。
+
+    两个端口合并进同一个进程（--with-positions）是刻意的：以前分两个子进程，
+    启动时会多出**两个**服务窗口，看着像开了两个程序；现在只有一个，
+    关掉启动脚本窗口时两个端口一起停，也不会留下孤儿进程。
     """
     try:
-        _start_bg("position_manager.py", 8765, "持仓管理服务")
-    except Exception as e:
-        print(f"[提示] 持仓管理服务自动启动失败（{e}）")
-    try:
-        return _start_bg("live_server.py", 8766, "主页 + 实时新闻服务")
+        return _start_bg("live_server.py", 8766, "主页 + 实时新闻 + 持仓管理服务",
+                         extra_args=["--with-positions"])
     except Exception as e:
         print(f"[提示] 主页/新闻服务自动启动失败（{e}），将退回 file:// 打开（地球贴图可能不显示）")
         return False
@@ -274,6 +277,8 @@ def run(use_login=True, open_browser=True):
     print("  主页:", PAGE_URL)
     print("  新闻:", "http://127.0.0.1:8766/api/news",
           "（每 %d 秒自动刷新）" % getattr(config, "NEWS_REFRESH_SECONDS", 300))
+    print("  持仓/自选:", "http://127.0.0.1:8765", "（与主页同进程托管）")
+    print("  个股页:", "主页里点持仓/自选任意一行即可进入（Ctrl/中键可开新标签）")
     print("  文件:", home_path or "(生成失败,详见上方提示)")
     print("=" * 60)
 

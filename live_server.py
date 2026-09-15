@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
@@ -154,6 +155,7 @@ class NewsHub:
 # ---------------------------------------------------------------- HTTP
 
 HUB = None  # 由 main() 注入
+STOCK_HUB = None  # 个股后台刷新（StockHub），同样由 main() 注入
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -209,6 +211,54 @@ class Handler(SimpleHTTPRequestHandler):
             })
             return
 
+        # ---- 个股终端：一次读回「报价 + 分时 + K线」----
+        # 前端带 ver 轮询：内容没变只回 {"unchanged": true}（3.5 秒一轮绝大多数走这条路）。
+        # 真正的抓取全在 StockHub 的后台档位线程里，这里只读缓存 —— 多个标签页同时刷
+        # 同一只票，上游也只会被打一次。
+        if path == "/api/stock":
+            q = parse_qs(qs)
+            code = (q.get("code") or [""])[0].strip()
+            if not code:
+                self._json({"ok": False, "msg": "缺少 code 参数（如 code=600941）"}, 400)
+                return
+            if STOCK_HUB is None:
+                self._json({"ok": False, "msg": "个股服务未启动"}, 503)
+                return
+            try:
+                client_ver = int((q.get("ver") or ["0"])[0] or 0)
+            except ValueError:
+                client_ver = 0
+            period = (q.get("period") or ["day"])[0]
+            with_intraday = (q.get("intraday") or ["1"])[0] != "0"
+            try:
+                payload, ver, changed = STOCK_HUB.read(
+                    code, period=period, client_ver=client_ver,
+                    with_intraday=with_intraday)
+            except Exception as e:
+                self._json({"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}, 500)
+                return
+            if not changed:
+                self._json({"ok": True, "unchanged": True, "ver": ver})
+            else:
+                payload["ok"] = True
+                self._json(payload)
+            return
+
+        if path == "/api/stock/health":
+            if STOCK_HUB is None:
+                self._json({"ok": False, "msg": "个股服务未启动"}, 503)
+                return
+            payload = {"ok": True}
+            payload.update(STOCK_HUB.health())
+            self._json(payload)
+            return
+
+        # 个股页：/stock?code=600941（页面自己在前端取 /api/stock）。
+        # 给个不带 .html 的短地址，方便收藏与从主页跳进来。
+        if path == "/stock":
+            self.path = "/stock.html"
+            return super().do_GET()
+
         return super().do_GET()
 
     def log_message(self, *args):
@@ -218,7 +268,7 @@ class Handler(SimpleHTTPRequestHandler):
 # ---------------------------------------------------------------- 入口
 
 def main():
-    global HUB
+    global HUB, STOCK_HUB
     parser = argparse.ArgumentParser(description="主页 + 实时新闻服务（常驻）")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--interval", type=int,
@@ -226,6 +276,8 @@ def main():
                         help="自动抓取新闻的间隔（秒，默认 300）")
     parser.add_argument("--once", action="store_true",
                         help="只抓一次并写入 output/live_news.json 后退出")
+    parser.add_argument("--with-positions", action="store_true",
+                        help="在同一进程里同时托管持仓管理服务（8765）—— 启动时只多一个窗口")
     args = parser.parse_args()
 
     if args.once:
@@ -246,14 +298,42 @@ def main():
     HUB = NewsHub(interval=args.interval)
     HUB.start()
 
+    # 个股后台刷新：分档抓被订阅的票（3.5s / 60s / 300s），非交易时段自动停。
+    # 起不来也不影响主页与新闻 —— 少一个功能比整站起不来强。
+    try:
+        import stock as stock_mod
+        STOCK_HUB = stock_mod.StockHub()
+        STOCK_HUB.start()
+    except Exception as e:
+        STOCK_HUB = None
+        print("[提示] 个股服务未启动：%s: %s" % (type(e).__name__, e))
+
     if not os.path.exists(os.path.join(BASE_DIR, "output", "index.html")):
         print("[提示] 还没生成主页，请先运行 python main.py")
+
+    # 同一进程里顺带托管 8765（持仓管理）：启动只占一个窗口，关掉窗口两个服务一起停。
+    # 端口被占（比如旧版服务还在跑）时只降级提示，不影响 8766 本身。
+    pos_server, pos_port = None, 8765
+    if args.with_positions:
+        try:
+            import position_manager
+            pos_port = getattr(position_manager, "PORT", 8765)
+            pos_server = position_manager.serve_in_thread()
+        except OSError as e:
+            print("[提示] 8765 持仓管理未随本进程启动（端口被占用？）：%s" % e)
+        except Exception as e:
+            print("[提示] 8765 持仓管理启动失败：%s: %s" % (type(e).__name__, e))
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print("=" * 58)
     print("  主页 + 实时新闻服务已启动（后台常驻）")
     print("  主页: http://127.0.0.1:%d/output/index.html" % args.port)
     print("  新闻: http://127.0.0.1:%d/api/news   每 %ds 自动刷新" % (args.port, HUB.interval))
+    if STOCK_HUB is not None:
+        print("  个股: http://127.0.0.1:%d/api/stock?code=600941  （3.5s/60s/300s 分档，非交易时段自动停）"
+              % args.port)
+    if pos_server is not None:
+        print("  持仓: http://127.0.0.1:%d   （与本进程同体，随窗口一起退出）" % pos_port)
     print("  关闭: 关掉启动脚本窗口 / Ctrl+C")
     print("=" * 58)
     try:
@@ -262,6 +342,10 @@ def main():
         pass
     finally:
         HUB.stop()
+        if STOCK_HUB is not None:
+            STOCK_HUB.stop()
+        if pos_server is not None:
+            pos_server.shutdown()
         server.server_close()
         print("\n已停止。")
     return 0
