@@ -14,7 +14,7 @@ except Exception:
     _ARGON2_OK = False
 
 # Argon2id 组合哈希 = Argon2("0762" + 强密码)，程序外一次性生成（16MB 内存档）
-ARGON2_HASH = "$argon2id$v=19$m=16384,t=2,p=1$e271hJRDAT/51KFNNb+YrQ$XYTVkcdfu8Ypeq4BFKC6hsQPpR3BsuX3EJXQs5aOd/I"
+ARGON2_HASH = "$argon2id$v=19$m=16384,t=2,p=1$XRM95kjRmIq0w1TQ82qupw$bKwFctLoRt6Ad1VxBCdiLS0HMqqqo8yEKFImUzJmVFQ"
 
 if _ARGON2_OK:
     PH = PasswordHasher(time_cost=2, memory_cost=16384, parallelism=1)
