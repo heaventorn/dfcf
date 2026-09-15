@@ -10,7 +10,7 @@ output/index.html 并自动打开;重新运行脚本即可刷新为最新快照�
          白底券商风格(红涨绿跌),支持滚轮缩放、拖动平移、十字光标;
          库的 TradingView 水印已用 attributionLogo=false + CSS + DOM 清理三重移除
   左下 📰 新闻 / 📅 日历(今日热点置顶 + 近 3 天事件;日历为今日/明日会议与经济数据)
-  右上 ⭐ 我的持仓(positions.json,空态给出管理入口)+ 🧺 配置标的行情(固收 / 逆回购 / 高成长 / 纳指标普)
+  右上 ⭐ 我的持仓(positions.json,空态给出管理入口)+ 📌 我的自选(watchlist.json;ETF/股票/其他三组,只跟行情、不记成本)
   右下 🪂 空中飞人指数(总分 / 等级 / 五维 / 参考指标 / 计分信号)
 
 交互:
@@ -125,7 +125,10 @@ def _positions_payload(portfolio_data):
 
 
 def _assets_payload(portfolio_data):
-    """右上窗口之二:配置标的行情(固收 / 逆回购 / 高成长基金 / 纳指标普 ETF)。"""
+    """右上窗口之二(旧):配置标的行情(固收 / 逆回购 / 高成长基金 / 纳指标普 ETF)。
+
+    主页已改用 _watchlist_payload()，本函数保留供回退（数据仍由 collect_all 采集）。
+    """
     pd = portfolio_data or {}
     fi = pd.get("fixed_income") or {}
     hr = pd.get("high_risk") or {}
@@ -138,6 +141,36 @@ def _assets_payload(portfolio_data):
                    "nav_date": _s(x.get("nav_date"))} for x in (hr.get("funds") or [])],
         "qdii": [{"name": _s(x.get("name")), "price": _s(x.get("price")), "pct": x.get("pct")}
                  for x in (hr.get("etfs") or [])],
+    }
+
+
+def _watchlist_payload(portfolio_data):
+    """右上窗口之二:「我的自选」——按 etf / stock / other 三组给行情。
+
+    与「我的持仓」的区别：这里**只跟行情**，没有成本价、不算盈亏。
+    场外基金给的是净值（带 nav_date）；国债逆回购的"价格"就是年化利率（is_rate）。
+    """
+    wl = ((portfolio_data or {}).get("watchlist") or {})
+    groups = []
+    for key, label in (("etf", "ETF"), ("stock", "股票"), ("other", "其他")):
+        rows = []
+        for x in (wl.get(key) or []):
+            if not isinstance(x, dict):
+                continue
+            rows.append({
+                "name": _s(x.get("name")), "code": _s(x.get("code")),
+                "kind": _s(x.get("kind")), "note": _s(x.get("note")),
+                "price": x.get("price"), "pct": x.get("pct"),
+                "nav_date": _s(x.get("nav_date")),
+                "is_rate": bool(x.get("is_rate")), "is_nav": bool(x.get("is_nav")),
+            })
+        groups.append({"key": key, "label": label, "rows": rows})
+    return {
+        "groups": groups,
+        "total": sum(len(g["rows"]) for g in groups),
+        "error": _s(wl.get("error")),
+        "asof": _s(wl.get("time")),
+        "manage_url": "http://127.0.0.1:8765",
     }
 
 
@@ -200,7 +233,8 @@ def build_payload(data, events=None, airman_res=None, airman_refs=None,
         "market": _market_payload(data),
         "calendar": calendar_res or {},
         "positions": _positions_payload(portfolio_data),
-        "assets": _assets_payload(portfolio_data),
+        "watchlist": _watchlist_payload(portfolio_data),
+        "assets": _assets_payload(portfolio_data),   # 旧的「配置标的行情」,主页已不再渲染
         "airman": _airman_payload(airman_res, airman_refs),
         "meta": {
             "events": len(events or []),
@@ -302,6 +336,26 @@ def generate_chart_data(code="sh000001", daily_bars=125):
 
 HOME_CSS = """
 <style>
+  /* ===== 设计令牌 · 沉稳专业 =====
+     层次靠「背景亮度分级」而不是彩色边框;强调色收敛到单一橙色,红绿只留给涨跌语义。
+     以后调整配色只需要动这一块。 */
+  :root{
+    --bg-0:#0a0e14; --bg-1:#111721; --bg-2:#18202c; --bg-3:#202b3a;
+    --line-1:#1b2430; --line-2:#28323f;
+    --fg-0:#e9eef6; --fg-1:#a9b5c6; --fg-2:#78879b; --fg-3:#556072;
+    --accent:#ff9f1c; --accent-dim:rgba(255,159,28,.14); --accent-line:rgba(255,159,28,.42);
+    --up:#f0453a; --down:#19a35f; --flat:#8b93a1;
+    --r-1:4px; --r-2:8px; --r-3:12px;
+    --dur-fast:120ms; --dur:220ms; --dur-slow:420ms;
+    --ease:cubic-bezier(.2,.7,.2,1);
+  }
+  /* 字体与数字:显式声明字体栈(原来没声明,全站吃系统默认),
+     并全局开 tabular-nums 让数字等宽 —— 专业感的骨架其实在这里 */
+  body{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",
+        "PingFang SC","Hiragino Sans GB",sans-serif;
+        font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1;
+        -webkit-font-smoothing:antialiased; }
+
   /* ===== 主页指挥台:三列布局(左 356 / 中自适应 / 右 376) ===== */
   #globeViz { left: 372px; right: 392px; }
   #title { left: 372px; right: 392px; top: 10px; max-width: none; text-align: center; }
@@ -317,127 +371,178 @@ HOME_CSS = """
              display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
   #colL { left: 14px; }
   #colR { right: 14px; width: 376px; }
-  .win { background: rgba(8,13,28,.92); border: 1px solid #26334f; border-radius: 12px;
-         box-shadow: 0 8px 30px rgba(0,0,0,.45); display: flex; flex-direction: column;
+  .win { background: var(--bg-1); border: 1px solid var(--line-1); border-radius: var(--r-3);
+         box-shadow: 0 6px 22px rgba(0,0,0,.38); display: flex; flex-direction: column;
          overflow: hidden; min-height: 0; }
   .wh { display: flex; align-items: center; gap: 6px; padding: 8px 12px 7px;
-        border-bottom: 1px solid #1a2438; flex: none; }
-  .wh .wt { font-size: 13px; font-weight: 700; color: #fff; white-space: nowrap; }
-  .wh .ws { flex: 1; min-width: 0; color: #6b7a97; font-size: 11px; text-align: right;
+        border-bottom: 1px solid var(--line-1); flex: none; }
+  .wh .wt { font-size: 13px; font-weight: 700; color: var(--fg-0); white-space: nowrap;
+            letter-spacing: .2px; }
+  .wh .ws { flex: 1; min-width: 0; color: var(--fg-2); font-size: 11px; text-align: right;
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .wfold { cursor: pointer; color: #8fa1c0; border: 1px solid #2a3a55; border-radius: 6px;
+  .wfold { cursor: pointer; color: var(--fg-1); border: 1px solid var(--line-2);
+           border-radius: var(--r-1);
            width: 18px; height: 18px; text-align: center; line-height: 16px; font-size: 12px;
            flex: none; user-select: none; }
-  .wfold:hover { color: #fff; }
+  .wfold:hover { color: var(--fg-0); border-color: var(--accent-line); }
   .wb { padding: 8px 12px 10px; overflow-y: auto; overflow-x: hidden; }
   .wb::-webkit-scrollbar { width: 6px; }
-  .wb::-webkit-scrollbar-thumb { background: #24304a; border-radius: 3px; }
-  .tab { cursor: pointer; color: #8fa1c0; border: 1px solid #2a3a55; border-radius: 999px;
+  .wb::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
+  .tab { cursor: pointer; color: var(--fg-1); border: 1px solid var(--line-2); border-radius: 999px;
          padding: 1px 8px; font-size: 11px; user-select: none; }
-  .tab.on { background: rgba(90,150,255,.2); border-color: #4a7fd0; color: #e2edff; }
-  .pos { color: #ff6b6b; }
-  .neg { color: #3ddc97; }
-  .flat { color: #9aa5b1; }
-  .hintxt { color: #6b7a97; font-size: 11px; }
-  .suninfo { color: #8fb6ff; font-size: 11px; margin-left: 8px; }
-  .empty { color: #8fa1c0; font-size: 12.5px; line-height: 1.9; padding: 4px 0; }
-  .btnlink { display: inline-block; margin-top: 6px; color: #e2edff; text-decoration: none;
-             background: rgba(90,150,255,.18); border: 1px solid #4a7fd0; border-radius: 8px;
-             padding: 5px 10px; font-size: 12px; }
-  .btnlink:hover { background: rgba(90,150,255,.32); }
+  .tab.on { background: var(--accent-dim); border-color: var(--accent-line); color: var(--accent); }
+  .pos { color: var(--up); }
+  .neg { color: var(--down); }
+  .flat { color: var(--flat); }
+  .hintxt { color: var(--fg-2); font-size: 11px; }
+  .suninfo { color: var(--fg-1); font-size: 11px; margin-left: 8px; }
+  .empty { color: var(--fg-1); font-size: 12.5px; line-height: 1.9; padding: 4px 0; }
+  .btnlink { display: inline-block; margin-top: 6px; color: var(--accent); text-decoration: none;
+             background: var(--accent-dim); border: 1px solid var(--accent-line);
+             border-radius: var(--r-2); padding: 5px 10px; font-size: 12px; }
+  .btnlink:hover { background: rgba(255,159,28,.26); }
 
   .idxgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
-  .idxcard { background: rgba(15,25,48,.6); border: 1px solid #1e2b45; border-radius: 8px;
+  .idxcard { background: var(--bg-2); border: 1px solid var(--line-1); border-radius: var(--r-2);
              padding: 6px 8px; }
-  .idxcard .in { color: #9fb0cf; font-size: 11px; }
-  .idxcard .ip { font-size: 15px; font-weight: 700; color: #e8eefc; line-height: 1.35; }
+  .idxcard .in { color: var(--fg-2); font-size: 11px; }
+  .idxcard .ip { font-size: 15px; font-weight: 700; color: var(--fg-0); line-height: 1.35; }
   .idxcard .ic { font-size: 11.5px; }
   .brow { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0 4px;
           font-size: 12px; }
-  .brow .bl { color: #6b7a97; font-size: 11px; }
-  .brow .bv { color: #dfe6f2; font-weight: 600; }
-  .sent { margin: 6px 0; font-size: 12.5px; color: #cfdaf0; }
-  .lbt { font-size: 11.5px; color: #9fb0cf; margin: 4px 0 2px; line-height: 1.9; }
-  .lbt i { font-style: normal; color: #ffb300; margin-left: 3px; }
-  .sub2 { color: #8fa1c0; font-size: 11.5px; font-weight: 700; margin: 8px 0 2px; }
-  .sec2 { color: #c8d3e8; font-size: 11.5px; font-weight: 700; margin: 10px 0 3px;
-          border-top: 1px dashed #1a2438; padding-top: 7px; }
+  .brow .bl { color: var(--fg-2); font-size: 11px; }
+  .brow .bv { color: var(--fg-0); font-weight: 600; }
+  .sent { margin: 6px 0; font-size: 12.5px; color: var(--fg-1); }
+  .lbt { font-size: 11.5px; color: var(--fg-1); margin: 4px 0 2px; line-height: 1.9; }
+  .lbt i { font-style: normal; color: var(--accent); margin-left: 3px; }
+  .sub2 { color: var(--fg-1); font-size: 11.5px; font-weight: 700; margin: 8px 0 2px; }
+  .sec2 { color: var(--fg-1); font-size: 11.5px; font-weight: 700; margin: 10px 0 3px;
+          border-top: 1px dashed var(--line-1); padding-top: 7px; }
   .tb { width: 100%; border-collapse: collapse; font-size: 12px; }
-  .tb td { padding: 3px 2px; border-bottom: 1px solid #141d33; color: #dfe6f2; }
+  .tb td { padding: 3px 2px; border-bottom: 1px solid var(--line-1); color: var(--fg-0); }
   .tb td:first-child { max-width: 118px; overflow: hidden; text-overflow: ellipsis;
                        white-space: nowrap; }
 
-  /* ===== 行情图:白底券商风格(lightweight-charts) ===== */
-  #tvBox { margin-top: 8px; background: #ffffff; border: 1px solid #dfe6ee; border-radius: 8px;
-           padding: 6px 4px 2px; }
+  /* ===== 行情图:改为深色(底色走 token;canvas 那层由 chartOpts 设成透明) ===== */
+  #tvBox { margin-top: 8px; background: var(--bg-2); border: 1px solid var(--line-1);
+           border-radius: var(--r-2); padding: 6px 4px 2px; }
   #tvMain { height: 206px; }
-  #tvVol { height: 64px; border-top: 1px solid #eef1f6; }
+  #tvVol { height: 64px; border-top: 1px solid var(--line-1); }
   #tvMain, #tvVol { width: 100%; }
   #tvBox .tvline { display: flex; align-items: flex-start; gap: 4px; }
   #tvLegend { width: 58px; flex: none; padding: 2px 0 0; font-size: 10.5px; line-height: 1.8; }
-  #tvLegend .lg { display: flex; align-items: center; gap: 3px; color: #6b7a97; white-space: nowrap; }
+  #tvLegend .lg { display: flex; align-items: center; gap: 3px; color: var(--fg-2); white-space: nowrap; }
   #tvLegend .lg i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-  #tvLegend .lg b { font-weight: 700; color: #2b3440; margin-left: auto; }
-  #tvLegend .lg.up b { color: #e64545; }
-  #tvLegend .lg.down b { color: #12a15d; }
+  #tvLegend .lg b { font-weight: 700; color: var(--fg-0); margin-left: auto; }
+  #tvLegend .lg.up b { color: var(--up); }
+  #tvLegend .lg.down b { color: var(--down); }
   .tvcharts { flex: 1; min-width: 0; }
-  #tvBox .chint { color: #8a94a3; font-size: 10.5px; margin: 2px 0 4px; text-align: center; }
-  #tvBox .empty { color: #8a94a3; padding: 6px 8px; }
+  #tvBox .chint { color: var(--fg-2); font-size: 10.5px; margin: 2px 0 4px; text-align: center; }
+  #tvBox .empty { color: var(--fg-2); padding: 6px 8px; }
   /* 永久隐藏 TradingView 水印(与 layout.attributionLogo=false 双保险) */
   #tvBox a, #tvMain a, #tvVol a { display: none !important; visibility: hidden !important; }
 
   .fbar { padding: 6px 2px 4px; }
-  .fbar input { width: 100%; box-sizing: border-box; background: rgba(15,25,48,.75);
-                border: 1px solid #2a3a55; border-radius: 6px; color: #dfe6f2;
+  .fbar input { width: 100%; box-sizing: border-box; background: var(--bg-2);
+                border: 1px solid var(--line-2); border-radius: var(--r-1); color: var(--fg-0);
                 font-size: 12px; padding: 5px 8px; outline: none; }
-  .fbar input:focus { border-color: #4a7fd0; }
+  .fbar input:focus { border-color: var(--accent-line); }
   .fchips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-  .fchip { cursor: pointer; font-size: 10.5px; color: #8fa1c0; border: 1px solid #2a3a55;
+  .fchip { cursor: pointer; font-size: 10.5px; color: var(--fg-1); border: 1px solid var(--line-2);
            border-radius: 999px; padding: 1px 7px; user-select: none; }
-  .fchip.on { background: rgba(90,150,255,.22); border-color: #4a7fd0; color: #e2edff; }
-  .fclear { cursor: pointer; font-size: 10.5px; color: #ff9d9d; border: 1px solid rgba(255,82,82,.35);
+  .fchip.on { background: var(--accent-dim); border-color: var(--accent-line); color: var(--accent); }
+  .fclear { cursor: pointer; font-size: 10.5px; color: #ff9d9d; border: 1px solid rgba(240,69,58,.35);
             border-radius: 999px; padding: 1px 7px; margin-left: auto; }
-  .fhit { color: #6b7a97; font-size: 10.5px; margin-top: 4px; }
-  .nr { padding: 7px 4px; border-bottom: 1px solid #141d33; cursor: pointer; }
-  .nr:hover { background: rgba(70,110,190,.14); }
+  .fhit { color: var(--fg-2); font-size: 10.5px; margin-top: 4px; }
+  .nr { padding: 7px 4px; border-bottom: 1px solid var(--line-1); cursor: pointer; }
+  .nr:hover { background: var(--bg-3); }
   .nr1 { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-  .nr .nt { color: #6b7a97; font-size: 11px; white-space: nowrap; }
-  .nr .nk { font-size: 10px; padding: 0 5px; border-radius: 4px; white-space: nowrap; }
-  .nr .kb { color: #ff9d9d; background: rgba(255,82,82,.14); border: 1px solid rgba(255,82,82,.38); }
-  .nr .kn { color: #8fd0ff; background: rgba(79,195,247,.1); border: 1px solid rgba(79,195,247,.28); }
-  .nr .nc { color: #9fb0cf; font-size: 11px; white-space: nowrap; }
+  .nr .nt { color: var(--fg-2); font-size: 11px; white-space: nowrap; }
+  .nr .nk { font-size: 10px; padding: 0 5px; border-radius: var(--r-1); white-space: nowrap; }
+  .nr .kb { color: #ff9d9d; background: rgba(255,77,141,.13); border: 1px solid rgba(255,77,141,.34); }
+  .nr .kn { color: var(--fg-1); background: rgba(120,150,220,.10); border: 1px solid var(--line-2); }
+  .nr .nc { color: var(--fg-2); font-size: 11px; white-space: nowrap; }
   .nr .nd { width: 7px; height: 7px; border-radius: 50%; margin-left: auto; }
-  .nr .ntx { color: #dfe6f2; font-size: 12.5px; line-height: 1.5; display: -webkit-box;
+  .nr .ntx { color: var(--fg-0); font-size: 12.5px; line-height: 1.5; display: -webkit-box;
              -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .cr { display: flex; align-items: flex-start; gap: 6px; padding: 5px 2px;
-        border-bottom: 1px solid #141d33; font-size: 12px; color: #dfe6f2; line-height: 1.5; }
-  .cr .ct { color: #8fd0ff; font-size: 11px; white-space: nowrap; min-width: 32px; }
-  .cr .cst { color: #ffb300; font-size: 10px; white-space: nowrap; }
-  .cr .ck { font-size: 10px; padding: 0 5px; border-radius: 4px; white-space: nowrap;
-            color: #c8d3e8; background: rgba(120,150,220,.12); border: 1px solid #2a3a55; }
-  .cr .creg { color: #9fb0cf; font-size: 11px; white-space: nowrap; }
+        border-bottom: 1px solid var(--line-1); font-size: 12px; color: var(--fg-0); line-height: 1.5; }
+  .cr .ct { color: var(--fg-1); font-size: 11px; white-space: nowrap; min-width: 32px; }
+  .cr .cst { color: var(--accent); font-size: 10px; white-space: nowrap; }
+  .cr .ck { font-size: 10px; padding: 0 5px; border-radius: var(--r-1); white-space: nowrap;
+            color: var(--fg-1); background: rgba(120,150,220,.10); border: 1px solid var(--line-2); }
+  .cr .creg { color: var(--fg-2); font-size: 11px; white-space: nowrap; }
   .calAll { margin: 6px 0 2px; }
-  .calAll summary { cursor: pointer; color: #6b7a97; font-size: 11.5px; }
+  .calAll summary { cursor: pointer; color: var(--fg-2); font-size: 11.5px; }
 
   .airtop { display: flex; align-items: center; gap: 12px; }
   .airnum { font-size: 42px; font-weight: 800; line-height: 1; }
-  .airlv { color: #fff; font-weight: 700; font-size: 12px; border-radius: 999px; padding: 3px 12px; }
-  .airbar { position: relative; height: 12px; background: #1a2438; border-radius: 6px;
+  .airlv { color: var(--fg-0); font-weight: 700; font-size: 12px; border-radius: 999px; padding: 3px 12px; }
+  .airbar { position: relative; height: 12px; background: var(--bg-2); border-radius: var(--r-1);
             margin: 10px 0 2px; overflow: hidden; }
-  .airbar .fill { height: 100%; border-radius: 6px; }
+  .airbar .fill { height: 100%; border-radius: var(--r-1); }
   .airbar i { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.28); }
-  .airscale { display: flex; justify-content: space-between; color: #6b7a97; font-size: 10.5px; }
+  .airscale { display: flex; justify-content: space-between; color: var(--fg-2); font-size: 10.5px; }
   .dimr { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-size: 11.5px; }
-  .dimr .dn { width: 108px; color: #9fb0cf; white-space: nowrap; overflow: hidden;
+  .dimr .dn { width: 108px; color: var(--fg-1); white-space: nowrap; overflow: hidden;
               text-overflow: ellipsis; }
-  .dimr .db { flex: 1; height: 9px; background: #1a2438; border-radius: 5px; overflow: hidden; }
-  .dimr .db i { display: block; height: 100%; border-radius: 5px; }
-  .dimr .dv { width: 26px; text-align: right; color: #dfe6f2; }
-  .refr { background: rgba(15,25,48,.6); border-left: 3px solid #4a7fd0; border-radius: 6px;
-          padding: 5px 9px; margin: 5px 0; font-size: 12px; color: #dfe6f2; }
-  .sigfold summary { cursor: pointer; color: #8fa1c0; font-size: 11.5px; margin: 6px 0; }
-  .sig { font-size: 11.5px; color: #cfdaf0; padding: 3px 0; line-height: 1.6; }
+  .dimr .db { flex: 1; height: 9px; background: var(--bg-2); border-radius: var(--r-1); overflow: hidden; }
+  .dimr .db i { display: block; height: 100%; border-radius: var(--r-1); }
+  .dimr .dv { width: 26px; text-align: right; color: var(--fg-0); }
+  .refr { background: var(--bg-2); border-left: 3px solid var(--accent); border-radius: var(--r-1);
+          padding: 5px 9px; margin: 5px 0; font-size: 12px; color: var(--fg-0); }
+  .sigfold summary { cursor: pointer; color: var(--fg-1); font-size: 11.5px; margin: 6px 0; }
+  .sig { font-size: 11.5px; color: var(--fg-1); padding: 3px 0; line-height: 1.6; }
   .sig i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+
+  /* ===== 动效系统 =====
+     统一时长与缓动:整个终端所有 hover / focus / 状态切换都走同一条曲线,
+     动效才会像"一个系统"而不是每个地方各写一个 ease。
+     时长语义:--dur-fast 120ms(颜色/文字) / --dur 220ms(背景/边框) / --dur-slow 420ms(入场)。 */
+  .win, .idxcard, .wb, .nr, .cr, .tab, .fchip, .fclear, .btnlink, .wfold, .calAll summary,
+  .sigfold summary, .airbar, .airbar .fill, .dimr .db, .dimr .db i, .tb td, .refr {
+    transition: background-color var(--dur) var(--ease),
+                border-color var(--dur) var(--ease),
+                color var(--dur-fast) var(--ease),
+                opacity var(--dur) var(--ease),
+                box-shadow var(--dur) var(--ease),
+                transform var(--dur) var(--ease);
+  }
+  /* 可交互元素的统一反馈:亮度上浮 + 极轻微位移,幅度刻意做小 */
+  .idxcard:hover { background: var(--bg-3); border-color: var(--line-2); }
+  .nr:hover .ntx { color: #fff; }
+  .tab:hover, .fchip:hover { color: var(--fg-0); border-color: var(--line-2); }
+  .btnlink:hover { transform: translateY(-1px); }
+  .tb tr:hover td { background: rgba(255,255,255,.02); }
+  .wfold:active { transform: scale(.92); }
+
+  /* 首屏入场:卡片错峰淡入上浮。作用在 .win 容器上(它不会被数据刷新重建),
+     所以只播一次;里面被重建的内容不会反复闪。 */
+  @keyframes _win-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .homecol .win { animation: _win-in var(--dur-slow) var(--ease) both; }
+  .homecol .win:nth-child(1) { animation-delay: 0ms; }
+  .homecol .win:nth-child(2) { animation-delay: 40ms; }
+  .homecol .win:nth-child(3) { animation-delay: 80ms; }
+  #sidePanel { animation: _win-in var(--dur-slow) var(--ease) both; }
+
+  /* 数据刷新:涨跌用一次性背景脉冲,而不是常驻闪烁 */
+  @keyframes _flash-up   { 0% { background: rgba(240,69,58,.16); }  100% { background: transparent; } }
+  @keyframes _flash-down { 0% { background: rgba(25,163,95,.16); }  100% { background: transparent; } }
+  .flash-up   { animation: _flash-up   620ms var(--ease) 1; }
+  .flash-down { animation: _flash-down 620ms var(--ease) 1; }
+
+  /* 尊重系统设置:开了"减少动态效果"就关掉 CSS 动画与过渡
+     (地球上的 WebGL 动效由 JS 侧读同一个媒体查询来处理) */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+    }
+  }
 
   @media (max-width: 1280px) {
     #colR { display: none; }
@@ -497,7 +602,7 @@ def _sidebar_html(assets_prefix="assets/"):
     <div class="wb" id="posBody"></div>
   </div>
   <div class="win" id="wAssets" style="flex:0 0 auto;">
-    <div class="wh"><span class="wt">🧺 配置标的行情</span><span class="ws">固收 / 逆回购 / 高成长 / 纳指标普</span>
+    <div class="wh"><span class="wt">📌 我的自选</span><span class="ws" id="watchAsOf">ETF / 股票 / 其他</span>
       <span class="wfold" data-w="wAssets" title="收起 / 展开">－</span></div>
     <div class="wb" id="assetsBody"></div>
   </div>
@@ -548,6 +653,33 @@ HOME_JS = r"""
     }
     function stars(n) { var s = ''; for (var i = 0; i < n; i++) s += '★'; return s; }
 
+    // ---------- 数字入场动效(工具) ----------
+    // 系统是否要求"减少动态效果":CSS 侧已用媒体查询关掉动画,这里给 JS 侧一个判据
+    function _reducedMotion() {
+      try {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      } catch (e) { return false; }
+    }
+    // 把一个"纯数字"元素的文本从 0 滚到目标值(约 620ms,缓出)。
+    // 结束时刻意写回原始文本,避免 toFixed 与页面已有格式(小数位/千分位)对不上。
+    function rollNumber(el, dur) {
+      var txt = (el.textContent || '').trim();
+      var target = parseFloat(txt.replace(/,/g, ''));
+      if (!isFinite(target) || target === 0) { return; }
+      var dec = (txt.split('.')[1] || '').length;
+      var t0 = 0;
+      dur = dur || 620;
+      function step(ts) {
+        if (!t0) { t0 = ts; }
+        var k = Math.min(1, (ts - t0) / dur);
+        var eased = 1 - Math.pow(1 - k, 3);        // easeOutCubic,与 CSS 的 --ease 观感一致
+        el.textContent = (target * eased).toFixed(dec);
+        if (k < 1) { requestAnimationFrame(step); }
+        else { el.textContent = txt; }
+      }
+      requestAnimationFrame(step);
+    }
+
     // ---------- 左上:大A行情概况 ----------
     function renderMarket() {
       var asof = HOME.asof || '';
@@ -588,12 +720,19 @@ HOME_JS = r"""
         h += '</tbody></table>';
       }
       $('mktBody').innerHTML = h;
+      // 数字入场:指数点位从 0 滚到真实值。纯视觉,失败也不影响数据展示。
+      try {
+        if (!_reducedMotion()) {
+          var _ips = $('mktBody').querySelectorAll('.idxcard .ip');
+          for (var _i = 0; _i < _ips.length; _i++) { rollNumber(_ips[_i]); }
+        }
+      } catch (e) {}
     }
 
     // ---------- 左上:行情图(白底券商风格 + 缩放/拖动/十字光标) ----------
     var LC = window.LightweightCharts;
     var chMain = null, chVol = null, mainSeries = [], volSeries = null, chartMode = 'minute';
-    var UP = '#e64545', DOWN = '#12a15d';
+    var UP = '#f0453a', DOWN = '#19a35f';        // 与 CSS 里的 --up/--down 保持一致
     var MA_COLORS = { '5': '#f0a500', '10': '#e91e63', '50': '#2563eb', '144': '#7c3aed' };
 
     function chartOpts(el, h) {
@@ -601,15 +740,21 @@ HOME_JS = r"""
         width: (el && el.clientWidth) || 320,
         height: h,
         layout: {
-          background: { color: '#ffffff' },
-          textColor: '#5a6573',
+          // 透明底:让 #tvBox 的深色背景透上来。
+          // 原来写死 '#ffffff',是这套深色界面里最大的一处白块。
+          background: { color: 'transparent' },
+          textColor: '#78879b',
           fontSize: 10,
           attributionLogo: false          // 永久移除 TradingView 水印
         },
-        grid: { vertLines: { color: '#f0f3f7' }, horzLines: { color: '#f0f3f7' } },
-        rightPriceScale: { borderColor: '#e0e6ee', scaleMargins: { top: 0.12, bottom: 0.12 } },
-        timeScale: { borderColor: '#e0e6ee', timeVisible: true, secondsVisible: false },
-        crosshair: { mode: LC && LC.CrosshairMode ? LC.CrosshairMode.Normal : 0 },
+        grid: { vertLines: { color: '#1b2430' }, horzLines: { color: '#1b2430' } },
+        rightPriceScale: { borderColor: '#1b2430', scaleMargins: { top: 0.12, bottom: 0.12 } },
+        timeScale: { borderColor: '#1b2430', timeVisible: true, secondsVisible: false },
+        crosshair: {
+          mode: LC && LC.CrosshairMode ? LC.CrosshairMode.Normal : 0,
+          vertLine: { color: '#556072', labelBackgroundColor: '#202b3a' },
+          horzLine: { color: '#556072', labelBackgroundColor: '#202b3a' }
+        },
         localization: { locale: 'zh-CN' },
         handleScroll: true,
         handleScale: true
@@ -799,15 +944,32 @@ HOME_JS = r"""
     }
     function newsRow(it, key) {
       var kc = it.kind === '突发' ? 'kb' : 'kn';
+      // 标题带原文链接:点标题直接跳原站(新窗口);点这一行的其它地方仍是飞向地球光点
+      var u = it.url || '';
+      var body = u
+        ? '<a class="ntx" href="' + esc(u) + '" target="_blank" rel="noopener noreferrer"' +
+          ' title="打开原文（' + esc(it.src || '') + '）" onclick="event.stopPropagation()"' +
+          ' style="text-decoration:none;color:#dfe6f2"' +
+          ' onmouseover="this.style.color=\'#8fd0ff\';this.style.textDecoration=\'underline\'"' +
+          ' onmouseout="this.style.color=\'#dfe6f2\';this.style.textDecoration=\'none\'">' +
+          esc(it.title) + '<span style="color:#6b7a97;font-size:10px;margin-left:4px">↗</span></a>'
+        : '<div class="ntx">' + esc(it.title) + '</div>';
       return '<div class="nr" data-k="' + key + '"><div class="nr1">' +
         '<span class="nt">' + _fmtTm(it.time) + '</span>' +
         '<span class="nk ' + kc + '">' + esc(it.kind || '') + '</span>' +
         (it.country ? '<span class="nc">' + esc(it.country) + '</span>' : '') +
         '<span class="nd" style="background:' + colorOf(it.sev) + '"></span></div>' +
-        '<div class="ntx">' + esc(it.title) + '</div></div>';
+        body + '</div>';
     }
     function renderNews() {
+      var nb = $('newsBody');
+      // 增量刷新前先记下滚动位置:fetch 轮询每 60 秒重画一次 newsBody,
+      // 不记的话列表会弹回顶部、正在看的那条被顶走 —— 这才是"刷新闪一下"的实际来源。
+      var keepTop = nb ? nb.scrollTop : 0;
       var h = '';
+      // 命中数是「热点 + 事件」两块之和。原代码先 hits += hots.length,随后又用
+      // var hits = list.length 覆盖掉,把热点的条数丢了(且第一次 += 时 hits 还没声明)。
+      var hits = 0;
       var hots = (HOT && HOT.items) ? HOT.items.filter(passFilter) : [];
       hits += hots.length;
       if (hots.length) {
@@ -816,7 +978,7 @@ HOME_JS = r"""
         hots.forEach(function (it, i) { h += newsRow(it, 'hot:' + i); });
       }
       var list = newsSorted().filter(passFilter);
-      var hits = list.length;
+      hits += list.length;
       var S = (HOME.meta || {}).sources || {}, sp = [];
       Object.keys(S).forEach(function (k) { sp.push(k + (S[k] < 0 ? ' ✕' : ' ' + S[k])); });
       var liveAt = (HOME.meta && HOME.meta.live_at) ? ' · ⟳ ' + esc(HOME.meta.live_at) + ' 已更新' : '';
@@ -828,8 +990,11 @@ HOME_JS = r"""
         h += '<div class="empty">' + ((FILTER.q || FILTER.kind || FILTER.sev || FILTER.src) ? '没有符合筛选条件的事件' : '暂无事件(重新运行脚本即可刷新)') + '</div>';
       }
       if ($('fHit')) $('fHit').textContent = '命中 ' + hits + ' 条 / 事件共 ' + (EVENTS || []).length + ' 条';
-      $('newsBody').innerHTML = h;
-      var rows = $('newsBody').querySelectorAll('.nr');
+      if (nb) {
+        nb.innerHTML = h;
+        nb.scrollTop = keepTop;                // 复原滚动位置,增量刷新不再跳回顶部
+      }
+      var rows = nb ? nb.querySelectorAll('.nr') : [];
       for (var i = 0; i < rows.length; i++) {
         (function (r) { r.onclick = function () { focusNews(r.getAttribute('data-k')); }; })(rows[i]);
       }
@@ -890,22 +1055,52 @@ HOME_JS = r"""
       h += '</tbody></table>';
       $('posBody').innerHTML = h;
     }
-    function renderAssets() {
-      var A = HOME.assets || {};
-      var groups = [['① 固收 / 货币 ETF', A.fixed], ['② 国债逆回购', A.repos],
-                    ['③ 高成长主动基金', A.funds], ['④ 纳指 / 标普 ETF', A.qdii]];
+    function renderWatchlist() {
+      // 「我的自选」:三组(ETF / 股票 / 其他)固定都列出来,空组也给提示;
+      // 只跟行情,没有成本/盈亏(那是 renderPos 的持仓)
+      var W = HOME.watchlist || {};
+      var groups = W.groups || [];
+      var total = W.total || 0;
+      if (!total) {
+        $('assetsBody').innerHTML = '<div class="empty">📌 还没有自选标的' +
+          (W.error ? '(采集异常：' + esc(W.error) + ')' : '') + '</div>' +
+          '<a class="btnlink" href="' + (W.manage_url || 'http://127.0.0.1:8765') +
+          '" target="_blank">＋ 添加自选(打开持仓管理)</a>';
+        if ($('watchAsOf')) $('watchAsOf').textContent = 'ETF / 股票 / 其他';
+        return;
+      }
       var h = '';
       groups.forEach(function (g) {
-        if (!g[1] || !g[1].length) return;
-        h += '<div class="sub2">' + g[0] + '</div><table class="tb"><tbody>';
-        g[1].forEach(function (x) {
-          h += '<tr><td>' + esc(x.name) + '</td><td>' + (x.price || x.nav || '-') + '</td>' +
-               '<td class="' + cls(x.pct) + '">' + (x.pct == null || x.pct === '' ? '-' : pctTxt(x.pct)) +
-               '</td></tr>';
+        var rows = g.rows || [];
+        h += '<div class="sub2">' + esc(g.label) +
+             '<span class="hintxt" style="margin-left:6px;font-weight:400">' + rows.length + ' 条</span></div>';
+        if (!rows.length) {
+          h += '<div class="empty" style="padding:2px 0 8px">暂无' + esc(g.label) +
+               '，点下方「管理自选」添加</div>';
+          return;
+        }
+        h += '<table class="tb"><tbody>';
+        rows.forEach(function (x) {
+          var val = (x.price == null || x.price === '') ? '-'
+                    : (x.is_rate ? esc(String(x.price)) + '%' : esc(String(x.price)));
+          var sub = x.kind ? '<div class="hintxt" style="font-size:10px">' + esc(x.kind) +
+                             (x.is_nav && x.nav_date ? ' · 净值日 ' + esc(x.nav_date) : '') + '</div>' : '';
+          h += '<tr><td>' + esc(x.name) + sub + '</td>' +
+               '<td>' + val + '</td>' +
+               '<td class="' + cls(x.pct) + '">' +
+               (x.pct == null || x.pct === '' ? '-' : pctTxt(x.pct)) + '</td></tr>';
         });
         h += '</tbody></table>';
       });
-      $('assetsBody').innerHTML = h || '<div class="empty">暂无配置标的行情(重新运行脚本后生成)</div>';
+      h += '<div class="hintxt" style="margin-top:6px">共 ' + total + ' 条' +
+           (W.asof ? ' · ' + esc(String(W.asof).slice(5, 16)) : '') +
+           ' · <a href="' + (W.manage_url || 'http://127.0.0.1:8765') +
+           '" target="_blank" style="color:#8fb6ff">管理自选</a></div>';
+      $('assetsBody').innerHTML = h;
+      if ($('watchAsOf')) $('watchAsOf').textContent = 'ETF ' + groups.filter(function (g) {
+        return g.key === 'etf'; })[0]?.rows.length + ' · 股票 ' +
+        (groups.filter(function (g) { return g.key === 'stock'; })[0]?.rows.length || 0) + ' · 其他 ' +
+        (groups.filter(function (g) { return g.key === 'other'; })[0]?.rows.length || 0);
     }
 
     // ---------- 右下:空中飞人指数 ----------
@@ -962,8 +1157,16 @@ HOME_JS = r"""
                  (it.city ? ' · ' + esc(it.city) : '') + (it.src ? ' · ' + _srcTag(it.src) : '') +
                  '<br><span style="color:' + colorOf(it.sev) + '">' + _lvTxt(it.sev) + '</span> · ' +
                  esc(it.kind || '');
+      var u = String(it.url || '').replace(/"/g, '%22');
       var body = '<div class="ev" style="background:rgba(70,110,190,.10);border-radius:8px;padding:10px;">' +
-                 esc(it.title) + '</div>';
+                 (u ? '<a href="' + u + '" target="_blank" rel="noopener noreferrer"' +
+                      ' style="color:#dfe6f2;text-decoration:none">' + esc(it.title) + '</a>'
+                    : esc(it.title)) + '</div>';
+      if (u) {
+        body += '<div style="margin:8px 0 2px"><a class="btnlink" href="' + u +
+                '" target="_blank" rel="noopener noreferrer">🔗 查看原文' +
+                (it.src ? '（' + esc(it.src) + '）' : '') + '</a></div>';
+      }
       body += '<div class="sec">' + esc(it.country || '该地点') + ' 相关新闻(' + peers.length + ' 条)</div>' +
               rowsFor(peers);
       fillPanel('📰', '新闻详情', meta, body);
@@ -1105,7 +1308,7 @@ HOME_JS = r"""
     initCharts();
     renderNews();
     renderPos();
-    renderAssets();
+    renderWatchlist();
     renderAir();
     window.__applyMapFilter = applyMapFilter;
 
@@ -1169,6 +1372,7 @@ def build_home(events, payload, out_path, assets_prefix="assets/", chart_data=No
         chart_data = generate_chart_data()
     payload = dict(payload or {})
     payload["charts"] = chart_data
+
     html = events_mod._assemble(
         events, _home_header(payload), assets_prefix=assets_prefix,
         extra_head=HOME_CSS, extra_body=_sidebar_html(assets_prefix),

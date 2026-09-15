@@ -186,8 +186,20 @@ def _in_window(time_str, ws_str):
     return time_str >= ws_str
 
 
+def _clean_url(u):
+    """规整原文链接:补协议头、只允许 http(s);拿不到就返回空串(前端会退化成不可点)。"""
+    u = (u or "").strip()
+    if not u:
+        return ""
+    if u.startswith("//"):
+        return "https:" + u
+    if not u.startswith(("http://", "https://")):
+        return ""
+    return u
+
+
 def _fetch_eastmoney(per_page=100, max_pages=None):
-    """东财 7x24 快讯(翻页取回时间窗内全部)。"""
+    """东财 7x24 快讯(翻页取回时间窗内全部)。原文链接取返回里的 url_w / url_unique。"""
     if max_pages is None:
         max_pages = int(getattr(config, "NEWS_EM_PAGES", 20))
     ws = _window_start_str()
@@ -206,7 +218,9 @@ def _fetch_eastmoney(per_page=100, max_pages=None):
             tm = (x.get("showtime") or "").strip()
             t = (x.get("title") or "").strip()
             if t and _in_window(tm, ws):
-                out.append({"time": tm, "title": t, "src": "东财"})
+                out.append({"time": tm, "title": t, "src": "东财",
+                            "url": _clean_url(x.get("url_w") or x.get("url_unique")
+                                              or x.get("url_m") or "")})
             elif tm and tm < ws:
                 early = True  # 已翻到窗口外,停止继续翻页
         if early:
@@ -215,7 +229,7 @@ def _fetch_eastmoney(per_page=100, max_pages=None):
 
 
 def _fetch_wallstcn(limit=None):
-    """华尔街见闻 global-channel 快讯。"""
+    """华尔街见闻 global-channel 快讯。原文链接取返回里的 uri。"""
     if limit is None:
         limit = int(getattr(config, "NEWS_WALLSTCN_LIMIT", 300))
     url = WALLSTCN_URL.format(n=limit)
@@ -236,7 +250,8 @@ def _fetch_wallstcn(limit=None):
         tm = _ts2str(it.get("display_time"))
         if not _in_window(tm, ws):
             continue
-        out.append({"time": tm, "title": title, "src": "见闻"})
+        out.append({"time": tm, "title": title, "src": "见闻",
+                    "url": _clean_url(it.get("uri") or "")})
     return out
 
 
@@ -320,7 +335,8 @@ def fetch_events(limit=None, drop_without_geo=True, days=WINDOW_DAYS):
     """多信源抓取(东财 7x24 / 华尔街见闻 / 财联社 / 金十 / 同花顺)→ 时间窗过滤
     → geo 归因(SPOTS 精确地点,兜底按国名归因到该国中心)→ 分级分类。按时间倒序。
 
-    每项: {time, title, src, city, country, lat, lng, sev, tag, kind}
+    每项: {time, title, src, url, city, country, lat, lng, sev, tag, kind}
+    url 为原文链接(点新闻标题可直接跳原站);某条拿不到时为空串。
     sev: 3 高影响 / 2 中影响 / 1 普通快讯(用于提高光点密度,前端以浅色小点呈现)。
     各源条数记录在 feeds.SOURCE_STATUS(供主页展示来源状态,-1 表示该源抓取失败)。
     """
@@ -365,6 +381,7 @@ def fetch_events(limit=None, drop_without_geo=True, days=WINDOW_DAYS):
             sev, tag = (2, "市场") if n.get("important") else (1, "其它")
         events.append({
             "time": n["time"], "title": title, "src": n.get("src", ""),
+            "url": n.get("url", ""),        # 原文链接:点新闻标题可跳原站
             "city": spot["city"], "country": spot["country"],
             "lat": spot["lat"], "lng": spot["lng"],
             "sev": sev, "tag": tag, "kind": _kind(title),
@@ -402,6 +419,7 @@ def _hot_items(events, top=HOT_TOP_N):
     for _sc, e in scored[:top]:
         items.append({
             "time": e.get("time", ""), "title": e.get("title", ""),
+            "url": e.get("url", ""),
             "country": e.get("country", ""), "city": e.get("city", ""),
             "lat": e.get("lat"), "lng": e.get("lng"),
             "kind": e.get("kind", ""), "sev": e.get("sev", 0),
@@ -418,7 +436,10 @@ _PAGE_JS = r"""
     return false;
   }
 
-  function colorOf(sev) { return sev >= 3 ? '#ff5252' : (sev === 2 ? '#ffb300' : '#4fc3f7'); }
+  // 事件严重度配色:刻意走「品红 → 琥珀 → 青」,避开红/绿。
+  // 原因:在 A 股语境里红=涨、绿=跌已经被占用,事件再用红,同一个颜色在同一块屏幕上
+  // 就有两种含义,久看必混。下面这个函数是严重度配色的唯一定义点,点/柱/弧/光环/徽章都从它派生。
+  function colorOf(sev) { return sev >= 3 ? '#ff4d8d' : (sev === 2 ? '#ffb340' : '#4dd0e1'); }
   function ringColorOf(sev) {
     var c = colorOf(sev);
     var r = parseInt(c.slice(1, 3), 16), g = parseInt(c.slice(3, 5), 16), b = parseInt(c.slice(5, 7), 16);
@@ -433,9 +454,14 @@ _PAGE_JS = r"""
   }
 
   // 同地点多条事件聚合为一个光点(数字徽章由 labels 显示)
+  // 键用「国家|城市」:同一个城市在 geo.SPOTS 里可能有多个坐标(如"纽约"相距 6km 的两条),
+  // 把经纬度算进 key 会被拆成两个光点、在球面上叠着穿模。city 为空时才退回坐标。
+  function _gkey(e) {
+    return e.city ? (e.country + '|' + e.city) : (e.country + '|' + e.lat + '|' + e.lng);
+  }
   var _seen = {}, groups = [];
   EVENTS.forEach(function (e) {
-    var k = e.country + '|' + e.lat + '|' + e.lng;
+    var k = _gkey(e);
     if (_seen[k]) {
       var g = _seen[k];
       g.count += 1;
@@ -463,8 +489,18 @@ _PAGE_JS = r"""
 
   function rowsFor(list) {
     return list.map(function (e) {
+      // 有原文链接的标题做成可点(新窗口),点标题跳原站
+      var u = String(e.url || "").replace(/"/g, "%22");
+      var t = u
+        ? '<a href="' + u + '" target="_blank" rel="noopener noreferrer"' +
+          ' style="color:#dfe6f2;text-decoration:none"' +
+          ' onmouseover="this.style.color=\'#8fd0ff\';this.style.textDecoration=\'underline\'"' +
+          ' onmouseout="this.style.color=\'#dfe6f2\';this.style.textDecoration=\'none\'"' +
+          ' title="打开原文（' + (e.src || "") + '）">' + e.title +
+          '<span style="color:#6b7a97;font-size:10px;margin-left:4px">↗</span></a>'
+        : e.title;
       return '<div class="ev"><span class="tm">' + _fmtTm(e.time) + '</span>' +
-             _srcTag(e.src) + e.title + '</div>';
+             _srcTag(e.src) + t + '</div>';
     }).join('');
   }
   // 突发消息 与 一般经济消息 分节展示
@@ -521,18 +557,75 @@ _PAGE_JS = r"""
     .polygonSideColor(function () { return 'rgba(90,150,255,0.03)'; })
     .polygonStrokeColor(function () { return 'rgba(255,255,255,0.28)'; })
 
+    // 飞行弧线:同一主题(tag)的事件分散在多个地点时,从"主地点"(事件最多/影响最高)
+    // 连向组内其它地点,表示同一件事在多处发生、彼此相关。
+    // 数量控制:每主题最多 3 条、总量不超过 24 条,免得糊成一片。
+    // globe.gl 的弧线走的是球面大圆弧,天然贴着地球飞过,不会穿模。
+    .arcsData((function () {
+      var byTag = {}, out = [], seenArc = {};
+      (groups || []).forEach(function (g) {
+        ((g.items || [])).forEach(function (e) {
+          var t = e.tag || '其它';
+          (byTag[t] = byTag[t] || []).push(g);
+        });
+      });
+      Object.keys(byTag).forEach(function (t) {
+        var gs = byTag[t].filter(function (g) { return g.sev >= 2 || g.count > 1; });
+        var uniq = [], seenPt = {};
+        gs.forEach(function (g) {
+          var k = g.lat + ',' + g.lng;
+          if (!seenPt[k]) { seenPt[k] = 1; uniq.push(g); }
+        });
+        if (uniq.length < 2) return;
+        uniq.sort(function (a, b) { return (b.count * 10 + b.sev) - (a.count * 10 + a.sev); });
+        var hub = uniq[0];
+        uniq.slice(1, 4).forEach(function (g) {
+          var k = hub.lat + ',' + hub.lng + '>' + g.lat + ',' + g.lng;
+          if (seenArc[k]) return;
+          seenArc[k] = 1;
+          out.push({ startLat: hub.lat, startLng: hub.lng, endLat: g.lat, endLng: g.lng,
+                     sev: Math.max(hub.sev || 0, g.sev || 0), tag: t });
+        });
+      });
+      return out.slice(0, 24);
+    })())
+    .arcStartLat(function (d) { return d.startLat; })
+    .arcStartLng(function (d) { return d.startLng; })
+    .arcEndLat(function (d) { return d.endLat; })
+    .arcEndLng(function (d) { return d.endLng; })
+    // 起点淡、终点实:配合流动的虚线,像"信号正沿着弧线传导"
+    .arcColor(function (d) {
+      var c = colorOf(d.sev);
+      var r = parseInt(c.slice(1, 3), 16), g = parseInt(c.slice(3, 5), 16), b = parseInt(c.slice(5, 7), 16);
+      return ['rgba(' + r + ',' + g + ',' + b + ',0.35)', c];
+    })
+    .arcStroke(0.4)
+    .arcDashLength(0.4)
+    .arcDashGap(0.22)
+    .arcDashAnimateTime(2600)
+
     .pointsData(groups)
     .pointLat(function (d) { return d.lat; })
     .pointLng(function (d) { return d.lng; })
     .pointColor(function (d) { return colorOf(d.sev); })
-    .pointAltitude(0.02)
-    .pointRadius(function (d) { return (d.sev >= 2 ? 0.42 : 0.26) + d.sev * 0.1 + (d.count > 1 ? Math.min(0.28, d.count * 0.045) : 0); })
+    // 3D 强度柱:只有「高影响(sev>=2) 或 多事件(count>1)」的地点才立起来,其余贴地。
+    // 这样既保住体量感,又不会像以前那样"每个点都是柱、同城几根叠着穿模" ——
+    // 同城在聚合阶段已合并,所以一个地点只有一根柱。
+    // 高度单位是球半径的比例(国界挤出是 0.006),这里 0.05~0.12:比国界明显、又不喧宾夺主。
+    .pointAltitude(function (d) {
+      if (d.sev < 2 && d.count <= 1) return 0;
+      return 0.02 + d.sev * 0.015 + Math.min(0.05, (d.count - 1) * 0.007);
+    })
+    .pointRadius(function (d) {
+      var r = (d.sev >= 2 ? 0.42 : 0.26) + d.sev * 0.1 + (d.count > 1 ? Math.min(0.28, d.count * 0.045) : 0);
+      // 立柱的地点把柱身收细,免得挡住周围;贴地圆片保持原尺寸
+      return (d.sev < 2 && d.count <= 1) ? r : r * 0.55;
+    })
     .pointsTransitionDuration(600)
 
-    // 涟漪(光点向外扩散的脉冲环)已按要求关闭 —— 数据置空即不渲染任何环。
-    // 若要恢复：把下面的 [] 换回
-    //   groups.filter(function (d) { return d.sev >= 2 || d.count > 1; })
-    .ringsData([])
+    // 外圈光环:贴地圆点之外再套一圈脉冲,把"位置在哪里"说得更清楚
+    // (替代原来立体柱的体量感;原来这里置空 = 完全关掉了涟漪)
+    .ringsData(groups.filter(function (d) { return d.sev >= 2 || d.count > 1; }))
     .ringLat(function (d) { return d.lat; })
     .ringLng(function (d) { return d.lng; })
     .ringColor(function (d) { return ringColorOf(d.sev); })
@@ -557,6 +650,45 @@ _PAGE_JS = r"""
   // 固定视角,不自动旋转(交互:拖拽/缩放 + 点击国家或光点)
   world.pointOfView({ lat: 18, lng: 20, altitude: 2.6 }, 0);
   setTimeout(function () { world.pointOfView({ lat: 18, lng: 20, altitude: 1.9 }, 1800); }, 300);
+
+  // ===== 相机自动巡游 =====
+  // 四条效果(强度柱 / 飞行弧线 / 光环 / 相机巡游)默认全开,不再有图层面板:
+  // 强度柱就是上面 pointAltitude 的默认行为,光环是 ringsData 的默认数据,
+  // 弧线是 arcsData 的默认数据,这里只管巡游。
+  // 巡游按「影响×10 + 条数」轮播热点;鼠标按下时先让位给用户,松手 8 秒后自动续上。
+  (function () {
+    var _ci = 0, _timer = null, _resume = null;
+    function cruiseTick() {
+      var list = (groups || []).slice().sort(function (a, b) {
+        return (b.sev * 10 + b.count) - (a.sev * 10 + a.count);
+      }).slice(0, 12);
+      if (!list.length) return;
+      var g = list[_ci % list.length];
+      _ci++;
+      world.pointOfView({ lat: g.lat, lng: g.lng, altitude: 1.35 }, 1600);
+    }
+    function pauseCruise() {
+      if (_timer) { clearInterval(_timer); _timer = null; }
+    }
+    function resumeCruise() {
+      if (_timer) { return; }
+      cruiseTick();
+      _timer = setInterval(cruiseTick, 5200);
+    }
+    var gv = document.getElementById('globeViz');
+    if (gv) {
+      gv.addEventListener('pointerdown', function () {        // 用户接管镜头
+        pauseCruise();
+        if (_resume) { clearTimeout(_resume); _resume = null; }
+      });
+    }
+    // 在 window 上收 pointerup:用户可能把鼠标拖到地球外面才松手
+    window.addEventListener('pointerup', function () {
+      if (_resume) { clearTimeout(_resume); }
+      _resume = setTimeout(resumeCruise, 8000);
+    });
+    resumeCruise();
+  })();
 
   // ===== 星空背景(运行时 canvas 生成星图,不新增资产)+ 大气层 =====
   function makeStarDataURL() {
@@ -813,9 +945,12 @@ _PAGE_JS = r"""
       L.setCrossOrigin(undefined);
       _earthMat = new THREE.ShaderMaterial({
         uniforms: {
-          uDay: { value: loadTex(L, '__ASSETS__/earth8k_day.jpg', DAY_URL, true) },
-          uElev: { value: loadTex(L, '__ASSETS__/earth4k_elev.jpg', null, false) },
-          uWater: { value: loadTex(L, '__ASSETS__/earth4k_water.png', null, false) },
+          // 三张都改成内嵌 data URL(见模板里的 DAY8K_URL / ELEV_URL / WATER_URL):
+          // file:// 打开时用本地文件路径会让 texSubImage2D 抛 SecurityError,贴图进不去 GPU。
+          // uDay 仍保留 DAY_URL 作兜底,万一内嵌图也失败还能退回 blue-marble。
+          uDay: { value: loadTex(L, DAY8K_URL, DAY_URL, true) },
+          uElev: { value: loadTex(L, ELEV_URL, null, false) },
+          uWater: { value: loadTex(L, WATER_URL, null, false) },
           uCamPos: { value: new THREE.Vector3() },
           uTime: { value: 0.0 },
           uElevScale: { value: 0.30 },
@@ -825,7 +960,9 @@ _PAGE_JS = r"""
         vertexShader: EARTH_VS,
         fragmentShader: EARTH_FS
       });
-      _realEarth = new THREE.Mesh(new THREE.SphereGeometry(100.05, 160, 100), _earthMat);
+      // 球体网格:160×100 段约 1.6 万个三角面,对 1080p 下的观感毫无增益,却白白吃掉
+      // 一半的顶点/片元开销。降到 96×64 后球缘依旧平滑(着色器只做贴图采样,不依赖细分)。
+      _realEarth = new THREE.Mesh(new THREE.SphereGeometry(100.05, 96, 64), _earthMat);
       _realEarth.visible = false;
       sc.add(_realEarth);
       _texReady = 0;
@@ -868,58 +1005,39 @@ _PAGE_JS = r"""
     } else if (ev.key === 'v' || ev.key === 'V') {
       u.uUvFlip.value = u.uUvFlip.value > 0.5 ? 0 : 1;
     } else { return; }
-    console.log('[地球贴图校正] 水平偏移', u.uUvOff.value.x.toFixed(2), '圈; 垂直翻转', u.uUvFlip.value > 0.5 ? '开' : '关');
+    if (window.console && console.log) {
+      console.log('[地球贴图校正] 水平偏移', u.uUvOff.value.x.toFixed(2), '圈; 垂直翻转', u.uUvFlip.value > 0.5 ? '开' : '关');
+    }
   });
 
   makeEarth();
   _bindCountryClick();
   var _t0 = Date.now();
-  (function earthLoop() {
+  var _earthRAF = 0;
+  // 注意用函数声明(而不是 (function earthLoop(){...})() 这种具名函数表达式):
+  // 后者的名字只在函数体内部可见,visibilitychange 里就调不到了。
+  function earthLoop() {
     updateEarthCamera();
     try { if (_earthMat) { _earthMat.uniforms.uTime.value = (Date.now() - _t0) / 1000; } } catch (e) {}
-    requestAnimationFrame(earthLoop);
-  })();
-
-  // ===== 材质真实感:海洋高光(specular)+ 地形起伏(bump) =====
-  // 仅做材质属性设置(绝不 onBeforeCompile / shader 改写),并等主贴图就绪后再应用;
-  // 任一步失败都静默降级,不影响地球本体渲染。
-  function applyRealTextures() {
-    try {
-      var gm = world.globeMaterial ? world.globeMaterial() : null;
-      if (!gm) return false;
-      if (!gm.map || !gm.map.image) return false; // 主贴图未就绪,稍后重试
-      var loader = new THREE.TextureLoader();
-      if (SPEC_URL) {
-        loader.load(SPEC_URL, function (t) {
-          try {
-            t.anisotropy = 4;
-            gm.specularMap = t;
-            gm.specular = new THREE.Color(0xbfd8ff);
-            gm.shininess = 22;
-            gm.needsUpdate = true;
-          } catch (err) { /* 静默 */ }
-        }, undefined, function () { /* specular 图加载失败,跳过 */ });
-      }
-      if (BUMP_URL) {
-        loader.load(BUMP_URL, function (t) {
-          try {
-            gm.bumpMap = t;
-            gm.bumpScale = 1.6; // globe 半径较大,幅度需调大才可见
-            gm.needsUpdate = true;
-          } catch (err) { /* 静默 */ }
-        }, undefined, function () { /* bump 图加载失败,跳过 */ });
-      }
-      return true;
-    } catch (err) {
-      if (window.console) console.warn('[globe] 材质增强已跳过:', err);
-      return true; // 出错即停,避免反复告警
-    }
+    _earthRAF = requestAnimationFrame(earthLoop);
   }
-  (function waitTexReady() {
-    var done = false;
-    try { done = applyRealTextures(); } catch (err) { done = true; }
-    if (!done) { setTimeout(waitTexReady, 300); }
-  })();
+  earthLoop();
+  // 页面切到后台时停掉渲染循环:省电,切回来也更快进入稳定帧。
+  document.addEventListener('visibilitychange', function () {
+    try {
+      if (document.hidden) {
+        if (_earthRAF) { cancelAnimationFrame(_earthRAF); _earthRAF = 0; }
+      } else if (!_earthRAF) {
+        earthLoop();
+      }
+    } catch (e) {}
+  });
+
+  // 说明:原有一段 applyRealTextures()/waitTexReady() 给 globe.gl 的原地球加
+  // specular/高光与 bump 起伏。但那颗原地球在 5 秒后就被上面那段逻辑隐藏了
+  // (o.visible = false),自建着色器地球又不读这两个贴图 —— 这段属于纯粹的空转,
+  // 白白跑定时器与两次贴图解码。已删除。真正在用的三张贴图见 makeEarth() 的
+  // uDay/uElev/uWater(它们走内嵌 data URL,file:// 下也不会被 CORS 拦)。
 """
 
 _PAGE_HTML = """<!DOCTYPE html>
@@ -929,66 +1047,96 @@ _PAGE_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>全球宏观事件 · 3D 实时地图</title>
 <style>
+  /* ===== 设计令牌(与主页同源) =====
+     地球页原先自成一派(蓝紫边框 + 一堆硬编码色),这里对齐主页那一套:
+     层次靠背景亮度分级、强调色单一(橙)、红绿只留给涨跌语义。 */
+  :root{
+    --bg-0:#0a0e14; --bg-1:#111721; --bg-2:#18202c; --bg-3:#202b3a;
+    --line-1:#1b2430; --line-2:#28323f;
+    --fg-0:#e9eef6; --fg-1:#a9b5c6; --fg-2:#78879b; --fg-3:#556072;
+    --accent:#ff9f1c; --accent-dim:rgba(255,159,28,.14); --accent-line:rgba(255,159,28,.42);
+    --up:#f0453a; --down:#19a35f; --flat:#8b93a1;
+    --r-1:4px; --r-2:8px; --r-3:12px;
+    --dur-fast:120ms; --dur:220ms; --dur-slow:420ms;
+    --ease:cubic-bezier(.2,.7,.2,1);
+  }
   html, body { margin: 0; padding: 0; height: 100%; background: #04060d; overflow: hidden;
-               font-family: "Microsoft YaHei", system-ui, sans-serif; color: #dfe6f2; }
+               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+                            "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+               color: var(--fg-0);
+               font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
   #globeViz { position: fixed; inset: 0; }
   .hud { position: fixed; z-index: 10; pointer-events: none; }
   #title { left: 22px; top: 18px; max-width: calc(100vw - 460px); }
   #title h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; letter-spacing: 1px; }
-  #title .sub { font-size: 12px; color: #8fa1c0; }
-  #tip { right: 22px; bottom: 22px; max-width: 320px; background: rgba(10,16,32,.85);
-         border: 1px solid #24304a; border-radius: 10px; padding: 12px 14px; font-size: 13px;
+  #title .sub { font-size: 12px; color: var(--fg-1); }
+  #tip { right: 22px; bottom: 22px; max-width: 320px; background: rgba(17,23,33,.88);
+         border: 1px solid var(--line-1); border-radius: var(--r-2); padding: 12px 14px; font-size: 13px;
          backdrop-filter: blur(4px); display: none; }
-  #tip .t { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 5px; }
-  #tip .m { color: #9fb0cf; font-size: 12px; margin-top: 6px; }
+  #tip .t { font-size: 14px; font-weight: 600; color: var(--fg-0); margin-bottom: 5px; }
+  #tip .m { color: var(--fg-1); font-size: 12px; margin-top: 6px; }
   #back { right: 22px; top: 18px; pointer-events: auto; }
-  #back a { color: #9fb0cf; text-decoration: none; font-size: 13px; border: 1px solid #24304a;
-            background: rgba(10,16,32,.7); padding: 8px 14px; border-radius: 8px; }
-  #back a:hover { color: #fff; }
+  #back a { color: var(--fg-1); text-decoration: none; font-size: 13px; border: 1px solid var(--line-1);
+            background: rgba(17,23,33,.7); padding: 8px 14px; border-radius: var(--r-2); }
+  #back a:hover { color: var(--fg-0); border-color: var(--accent-line); }
   /* 右侧详情面板(点击国家/光点后显示) */
   #sidePanel { position: fixed; z-index: 12; right: 18px; top: 64px; bottom: 18px; width: 380px;
-               max-width: 50vw; background: rgba(8,13,28,.94); border: 1px solid #26334f;
-               border-radius: 12px; padding: 14px 16px; box-sizing: border-box;
-               box-shadow: 0 8px 30px rgba(0,0,0,.45); font-size: 13px;
+               max-width: 50vw; background: rgba(17,23,33,.96); border: 1px solid var(--line-1);
+               border-radius: var(--r-3); padding: 14px 16px; box-sizing: border-box;
+               box-shadow: 0 6px 22px rgba(0,0,0,.38); font-size: 13px;
                pointer-events: auto; display: none; overflow-y: auto; }
   #sidePanel .ph { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-  #sidePanel h3 { margin: 0; font-size: 16px; color: #fff; font-weight: 700; }
-  #sidePanel .x { cursor: pointer; color: #8fa1c0; font-size: 18px; padding: 0 6px; line-height: 1; }
-  #sidePanel .x:hover { color: #fff; }
-  #sidePanel .meta { color: #9fb0cf; font-size: 12px; margin: 2px 0 10px; }
-  #sidePanel .list { border-top: 1px solid #1a2438; }
-  #sidePanel .sec { color: #c8d3e8; font-size: 12px; font-weight: 700; margin: 10px 0 2px; }
-  #sidePanel .ev { border-bottom: 1px solid #141d33; padding: 8px 2px; line-height: 1.55; color: #dfe6f2; }
-  #sidePanel .tm { color: #6b7a97; font-size: 11px; margin-right: 6px; white-space: nowrap; }
-  #sidePanel .src { font-size: 10px; color: #7fa8d9; border: 1px solid #2a3a55;
-                    border-radius: 4px; padding: 0 4px; margin-right: 6px; }
+  #sidePanel h3 { margin: 0; font-size: 16px; color: var(--fg-0); font-weight: 700; }
+  #sidePanel .x { cursor: pointer; color: var(--fg-1); font-size: 18px; padding: 0 6px; line-height: 1; }
+  #sidePanel .x:hover { color: var(--fg-0); }
+  #sidePanel .meta { color: var(--fg-1); font-size: 12px; margin: 2px 0 10px; }
+  #sidePanel .list { border-top: 1px solid var(--line-1); }
+  #sidePanel .sec { color: var(--fg-1); font-size: 12px; font-weight: 700; margin: 10px 0 2px; }
+  #sidePanel .ev { border-bottom: 1px solid var(--line-1); padding: 8px 2px; line-height: 1.55; color: var(--fg-0); }
+  #sidePanel .tm { color: var(--fg-2); font-size: 11px; margin-right: 6px; white-space: nowrap; }
+  #sidePanel .src { font-size: 10px; color: var(--fg-1); border: 1px solid var(--line-2);
+                    border-radius: var(--r-1); padding: 0 4px; margin-right: 6px; }
   /* 左栏今日热点卡 */
   #hotWrap { position: fixed; z-index: 11; left: 22px; top: 126px; width: 318px; max-width: 36vw;
-             pointer-events: auto; background: rgba(8,13,28,.92); border: 1px solid #26334f;
-             border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.45); font-size: 13px;
+             pointer-events: auto; background: rgba(17,23,33,.94); border: 1px solid var(--line-1);
+             border-radius: var(--r-3); box-shadow: 0 6px 22px rgba(0,0,0,.38); font-size: 13px;
              overflow: hidden; }
   #hotHead { display: flex; align-items: center; padding: 10px 12px 8px; }
-  #hotHead .ht1 { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: .5px; white-space: nowrap; }
-  #hotHead .ht2 { flex: 1; min-width: 0; color: #6b7a97; font-size: 11px; margin: 0 8px;
+  #hotHead .ht1 { font-size: 15px; font-weight: 700; color: var(--fg-0); letter-spacing: .5px; white-space: nowrap; }
+  #hotHead .ht2 { flex: 1; min-width: 0; color: var(--fg-2); font-size: 11px; margin: 0 8px;
                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #hotFold { cursor: pointer; color: #8fa1c0; border: 1px solid #2a3a55; border-radius: 6px;
+  #hotFold { cursor: pointer; color: var(--fg-1); border: 1px solid var(--line-2); border-radius: var(--r-1);
              width: 20px; height: 20px; text-align: center; line-height: 18px; font-size: 13px;
              flex: none; user-select: none; }
-  #hotFold:hover { color: #fff; }
-  #hotBody { max-height: 46vh; overflow-y: auto; border-top: 1px solid #1a2438; }
-  #hotBody .hr { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #141d33; }
-  #hotBody .hr:hover { background: rgba(70, 110, 190, .16); }
+  #hotFold:hover { color: var(--fg-0); border-color: var(--accent-line); }
+  #hotBody { max-height: 46vh; overflow-y: auto; border-top: 1px solid var(--line-1); }
+  #hotBody .hr { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--line-1); }
+  #hotBody .hr:hover { background: var(--bg-3); }
   #hotBody .hr1 { display: flex; align-items: center; margin-bottom: 3px; }
-  #hotBody .ht { color: #6b7a97; font-size: 11px; margin-right: 8px; white-space: nowrap; }
-  #hotBody .hk { font-size: 10px; line-height: 1.6; padding: 0 5px; border-radius: 4px; white-space: nowrap; }
-  #hotBody .hkb { color: #ff9d9d; background: rgba(255, 82, 82, .14); border: 1px solid rgba(255, 82, 82, .38); }
-  #hotBody .hkn { color: #8fd0ff; background: rgba(79, 195, 247, .1); border: 1px solid rgba(79, 195, 247, .28); }
-  #hotBody .hc { margin-left: auto; color: #9fb0cf; font-size: 11px; padding-left: 8px; white-space: nowrap; }
-  #hotBody .htx { color: #dfe6f2; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2;
+  #hotBody .ht { color: var(--fg-2); font-size: 11px; margin-right: 8px; white-space: nowrap; }
+  #hotBody .hk { font-size: 10px; line-height: 1.6; padding: 0 5px; border-radius: var(--r-1); white-space: nowrap; }
+  #hotBody .hkb { color: #ff9d9d; background: rgba(255, 77, 141, .14); border: 1px solid rgba(255, 77, 141, .38); }
+  #hotBody .hkn { color: var(--fg-1); background: rgba(120, 150, 220, .10); border: 1px solid var(--line-2); }
+  #hotBody .hc { margin-left: auto; color: var(--fg-1); font-size: 11px; padding-left: 8px; white-space: nowrap; }
+  #hotBody .htx { color: var(--fg-0); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2;
                   -webkit-box-orient: vertical; overflow: hidden; }
-  #hotBody .hnone { color: #6b7a97; padding: 14px 12px; }
-  #hotHint { color: #5f6f8f; font-size: 11px; padding: 6px 12px 9px; }
+  #hotBody .hnone { color: var(--fg-2); padding: 14px 12px; }
+  #hotHint { color: var(--fg-2); font-size: 11px; padding: 6px 12px 9px; }
+
+  /* 交互过渡:与主页同一套时长与缓动 */
+  #back a, #hotBody .hr, #hotFold, #sidePanel .x {
+    transition: background-color var(--dur) var(--ease),
+                border-color var(--dur) var(--ease),
+                color var(--dur-fast) var(--ease);
+  }
   @media (max-width: 960px) { #hotWrap { display: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+    }
+  }
 </style>
 __EXTRA_HEAD__
 </head>
@@ -1014,6 +1162,13 @@ __EXTRA_BODY__
 var SPEC_URL = "__SPECULAR_DATAURL__";
 var BUMP_URL = "__BUMP_DATAURL__";
 var DAY_URL = "__TEXTURE_DATAURL__";
+// 下面三张才是着色器地球真正用的贴图,必须内嵌成 data URL:
+// file:// 打开时浏览器把本地图片当"跨源数据",WebGL 的 texSubImage2D 会直接抛
+// SecurityError(图片本身却能 load 成功,所以 onError 兜底永远不触发)——只有内嵌
+// 成 data URL 才能既离线打开、又让贴图进得去 GPU。
+var DAY8K_URL = "__DAY8K_DATAURL__";    // earth8k_day.jpg → 降到 4K
+var ELEV_URL = "__ELEV_DATAURL__";      // earth4k_elev.jpg
+var WATER_URL = "__WATER_DATAURL__";    // earth4k_water.png → 灰度 JPEG
 var EVENTS = __EVENTS_JSON__ || [];
 var HOT = __HOT_JSON__ || { items: [] };
 var WORLD_GEO = __GEOJSON_DATA__ || { features: [] };
@@ -1048,6 +1203,47 @@ def _hot_items_json(events):
     return json.dumps(_hot_items(events), ensure_ascii=False).replace("</", "<\\/")
 
 
+def _tex_dataurl(base, name, max_width=0, quality=0, gray=False):
+    """把 assets 下的贴图读成 data URL,可选降采样。
+
+    为什么非内嵌不可:用 file:// 打开页面时,浏览器把本地图片视作"跨源数据",
+    WebGL 的 texSubImage2D 会抛 SecurityError,纹理进不去 GPU —— 地球就成了黑球。
+    而图片本身能 load 成功,所以 loadTex 的 onError 兜底根本不会触发。
+    内嵌成 data URL 后既满足「单文件、离线可开」,又不受这条限制。
+
+    max_width  超过这个宽度就等比缩小(8K 贴图降到 4K 在屏幕上没有可感差别,
+               却能把 base64 从 6MB 压到 1.2MB)
+    quality    有值时转成 JPEG(地球水图只被 shader 读 .r 通道,丢 alpha 无影响)
+    gray       转灰度 JPEG,体积更小
+    Pillow 不可用时退回"原图直接内嵌",体积大但功能不受影响。
+    """
+    path = os.path.join(base, "assets", name)
+    with open(path, "rb") as f:
+        raw = f.read()
+    mime = "image/png" if name.lower().endswith(".png") else "image/jpeg"
+    if max_width or quality or gray:
+        try:
+            import io as _io
+            from PIL import Image
+            im = Image.open(_io.BytesIO(raw))
+            if max_width and im.width > max_width:
+                h = max(1, int(round(im.height * max_width / float(im.width))))
+                im = im.resize((max_width, h), Image.LANCZOS)
+            buf = _io.BytesIO()
+            if gray:
+                im.convert("L").save(buf, "JPEG", quality=quality or 85, optimize=True)
+                mime = "image/jpeg"
+            elif quality:
+                im.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True)
+                mime = "image/jpeg"
+            else:
+                im.save(buf, "PNG", optimize=True)
+            raw = buf.getvalue()
+        except Exception:
+            pass
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+
+
 def _assemble(events, header_html, assets_prefix="assets/",
               extra_head="", extra_body="", extra_js="", payload_json=""):
     """按模板拼装完整 HTML(贴图与国界 GeoJSON 均内嵌,规避 file:// 限制)。
@@ -1059,12 +1255,13 @@ def _assemble(events, header_html, assets_prefix="assets/",
       payload_json 主页数据 JSON → 注入为全局 HOME
     """
     base = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(base, "assets", "earth-blue-marble.jpg"), "rb") as f:
-        tex_dataurl = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("ascii")
-    with open(os.path.join(base, "assets", "earth_specular_2048.jpg"), "rb") as f:
-        spec_dataurl = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("ascii")
-    with open(os.path.join(base, "assets", "earth_normal_2048.jpg"), "rb") as f:
-        bump_dataurl = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("ascii")
+    tex_dataurl = _tex_dataurl(base, "earth-blue-marble.jpg")
+    spec_dataurl = _tex_dataurl(base, "earth_specular_2048.jpg")
+    bump_dataurl = _tex_dataurl(base, "earth_normal_2048.jpg")
+    # 着色器地球真正用的三张:内嵌 + 降采样(原因见 _tex_dataurl)
+    day8k_dataurl = _tex_dataurl(base, "earth8k_day.jpg", max_width=4096, quality=88)
+    elev_dataurl = _tex_dataurl(base, "earth4k_elev.jpg", max_width=2048, quality=88)
+    water_dataurl = _tex_dataurl(base, "earth4k_water.png", max_width=2048, quality=82, gray=True)
     with open(os.path.join(base, "assets", "world.geojson"), encoding="utf-8") as f:
         geo_data = f.read().strip()
     ev_json = json.dumps(events, ensure_ascii=False).replace("</", "<\\/")
@@ -1085,6 +1282,9 @@ def _assemble(events, header_html, assets_prefix="assets/",
         .replace("__TEXTURE_DATAURL__", tex_dataurl) \
         .replace("__SPECULAR_DATAURL__", spec_dataurl) \
         .replace("__BUMP_DATAURL__", bump_dataurl) \
+        .replace("__DAY8K_DATAURL__", day8k_dataurl) \
+        .replace("__ELEV_DATAURL__", elev_dataurl) \
+        .replace("__WATER_DATAURL__", water_dataurl) \
         .replace("__ASSETS__/", assets_prefix) \
         .replace("__EVENT_COUNT__", str(len(events)))
 

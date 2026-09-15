@@ -42,15 +42,27 @@ STATIC_EXT = (".jpg", ".jpeg", ".png", ".js", ".css", ".geojson")
 
 # ---------------------------------------------------------------- 光点聚合
 
+def _group_key(e):
+    """光点聚合键：优先「国家|城市」。
+
+    不能把经纬度放进 key —— 同一个城市在 geo.SPOTS 里可能对应多个坐标
+    （例如"纽约"既有 40.75/-73.97 也有 40.71/-74.01，相距仅 6km），
+    那样会被拆成两个光点、在球面上叠着穿模。city 为空时才退回坐标。
+    """
+    if e.get("city"):
+        return "%s|%s" % (e.get("country"), e.get("city"))
+    return "%s|%s|%s" % (e.get("country"), e.get("lat"), e.get("lng"))
+
+
 def build_groups(events):
-    """按 country|lat|lng 合并事件为地球光点。
+    """按「国家|城市」合并事件为地球光点。
 
     与 events.py 前端 _PAGE_JS 里的聚合规则保持一致（同一地点合并、sev 取最大、
     count 累加、items 收全部），这样动态刷新出来的光点与首屏渲染完全同构。
     """
     seen, groups = {}, []
     for e in (events or []):
-        key = "%s|%s|%s" % (e.get("country"), e.get("lat"), e.get("lng"))
+        key = _group_key(e)
         g = seen.get(key)
         if g is not None:
             g["count"] += 1

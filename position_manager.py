@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 POS_FILE = os.path.join(BASE_DIR, "positions.json")
+WATCH_FILE = os.path.join(BASE_DIR, "watchlist.json")
 PORT = 8765
 
 
@@ -60,9 +61,106 @@ def find_pos(data, code):
     return None, None
 
 
+# ---------------- 自选数据读写 ----------------
+# 「我的自选」只跟行情：没有成本价/数量。分三组 etf / stock / other。
+WATCH_GROUPS = ("etf", "stock", "other")
+
+
+def load_watchlist_raw():
+    """读 watchlist.json 的原始结构；文件不存在时返回空壳（不在此处自动建种子）。"""
+    try:
+        with open(WATCH_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {"items": []}
+    except Exception:
+        return {"items": []}
+
+
+def save_watchlist(data):
+    with open(WATCH_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def find_watch(data, code):
+    """按代码查找自选，返回 (索引, 条目) 或 (None, None)"""
+    code = str(code).strip()
+    for i, p in enumerate(data.get("items", [])):
+        if str(p.get("code", "")).strip() == code:
+            return i, p
+    return None, None
+
+
 # ---------------- 接口处理 ----------------
 def api_positions():
     return {"ok": True, "positions": load_positions().get("positions", [])}
+
+
+# ---------------- 我的自选：接口 ----------------
+def api_watchlist():
+    return {"ok": True, "items": load_watchlist_raw().get("items", [])}
+
+
+def api_watch_add(params):
+    """加入自选：只要 代码（名称可留空，行情里带得有）+ 分组；没有成本/数量。"""
+    code = (params.get("code") or "").strip()
+    name = (params.get("name") or "").strip()
+    group = (params.get("group") or "").strip()
+    note = (params.get("note") or "").strip()
+    if not code:
+        return {"ok": False, "msg": "代码不能为空"}
+    if group not in WATCH_GROUPS:
+        return {"ok": False, "msg": "分组必须是 etf / stock / other 之一"}
+
+    data = load_watchlist_raw()
+    idx, old = find_watch(data, code)
+    item = {
+        "tx": guess_market(code) + code,
+        "code": code,
+        "name": name or (old or {}).get("name", "") or code,
+        "group": group,
+        "kind": (params.get("kind") or "").strip() or (old or {}).get("kind", ""),
+        "note": note or (old or {}).get("note", ""),
+    }
+    # 场外基金没有实时行情（只有净值），不给 tx
+    if item["kind"] == "场外基金":
+        item["tx"] = ""
+    if idx is not None:
+        data["items"][idx] = item
+        msg = "已更新自选"
+    else:
+        data.setdefault("items", []).append(item)
+        msg = "已加入自选"
+    save_watchlist(data)
+    return {"ok": True, "msg": msg, "items": data["items"]}
+
+
+def api_watch_delete(params):
+    code = (params.get("code") or "").strip()
+    if not code:
+        return {"ok": False, "msg": "请提供要删除的代码"}
+    data = load_watchlist_raw()
+    idx, _ = find_watch(data, code)
+    if idx is None:
+        return {"ok": False, "msg": f"未找到代码 {code} 的自选"}
+    data["items"].pop(idx)
+    save_watchlist(data)
+    return {"ok": True, "msg": "已删除", "items": data["items"]}
+
+
+def api_watch_update(params):
+    code = (params.get("code") or "").strip()
+    field = params.get("field")
+    value = params.get("value")
+    if not code or field not in ("name", "group", "note", "kind"):
+        return {"ok": False, "msg": "参数错误"}
+    if field == "group" and value not in WATCH_GROUPS:
+        return {"ok": False, "msg": "分组必须是 etf / stock / other 之一"}
+    data = load_watchlist_raw()
+    idx, _ = find_watch(data, code)
+    if idx is None:
+        return {"ok": False, "msg": f"未找到代码 {code} 的自选"}
+    data["items"][idx][field] = str(value or "").strip()
+    save_watchlist(data)
+    return {"ok": True, "msg": "已修改", "items": data["items"]}
 
 
 def api_add(params):
@@ -207,24 +305,53 @@ PAGE_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <h1>📊 个人投资组合 · 持仓管理</h1>
-  <div class="sub">修改结果实时写入 positions.json，下次运行爬虫即生效 · 服务仅本机可用</div>
+  <h1>📊 个人投资组合 · 持仓与自选</h1>
+  <div class="sub">修改结果实时写入 positions.json / watchlist.json，下次运行爬虫即生效 · 服务仅本机可用</div>
 
-  <div class="toolbar">
-    <button class="btn btn-buy" onclick="openBuy()">＋ 买入 / 加入</button>
-    <button class="btn btn-sell" onclick="openSell()">－ 卖出 / 删除</button>
-    <button class="btn" style="background:#5b6b7b;" onclick="refresh()">↻ 刷新</button>
+  <div style="display:flex; gap:8px; margin:0 0 16px;">
+    <button class="tab on" id="tabBtnPos" onclick="switchTab('pos')"
+      style="border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;background:#1f2d3d;color:#fff;">⭐ 持仓管理</button>
+    <button class="tab" id="tabBtnWatch" onclick="switchTab('watch')"
+      style="border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;background:#e8ecf2;color:#5a6573;">📌 自选管理</button>
   </div>
 
-  <div class="card">
-    <table>
-      <thead>
-        <tr><th>名称</th><th>代码</th><th>市场</th><th>成本</th><th>数量</th><th>成本市值</th><th>备注</th><th>操作</th></tr>
-      </thead>
-      <tbody id="tbody"></tbody>
-    </table>
-    <div id="empty" class="empty" style="display:none;">暂无持仓，点上方"买入/加入"开始添加</div>
+  <!-- ================= 持仓 ================= -->
+  <div id="tabPos">
+    <div class="toolbar">
+      <button class="btn btn-buy" onclick="openBuy()">＋ 买入 / 加入</button>
+      <button class="btn btn-sell" onclick="openSell()">－ 卖出 / 删除</button>
+      <button class="btn" style="background:#5b6b7b;" onclick="refresh()">↻ 刷新</button>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>名称</th><th>代码</th><th>市场</th><th>成本</th><th>数量</th><th>成本市值</th><th>备注</th><th>操作</th></tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div id="empty" class="empty" style="display:none;">暂无持仓，点上方"买入/加入"开始添加</div>
+    </div>
   </div>
+
+  <!-- ================= 我的自选 ================= -->
+  <div id="tabWatch" style="display:none">
+    <div class="toolbar">
+      <button class="btn btn-buy" onclick="openWatchAdd()">＋ 加入自选</button>
+      <button class="btn" style="background:#5b6b7b;" onclick="refreshWatch()">↻ 刷新</button>
+    </div>
+    <div class="card">
+      <div class="sub" style="margin:0 0 10px;">只跟行情，<b>不记成本 / 数量</b>（要算盈亏请加到「持仓管理」）。分组：ETF / 股票 / 其他。</div>
+      <table>
+        <thead>
+          <tr><th>名称</th><th>代码</th><th>分组</th><th>类型</th><th>备注</th><th>操作</th></tr>
+        </thead>
+        <tbody id="wtbody"></tbody>
+      </table>
+      <div id="wtempty" class="empty" style="display:none;">还没有自选，点上方"加入自选"开始添加</div>
+    </div>
+  </div>
+
   <div id="msg" class="msg"></div>
 </div>
 
@@ -256,6 +383,29 @@ PAGE_HTML = """<!DOCTYPE html>
       <button class="btn-ok" onclick="doSell()">确认卖出</button>
     </div>
     <div id="msgSell" class="msg"></div>
+  </div>
+</div>
+
+<!-- 加入自选弹窗（没有价格/数量） -->
+<div class="modal-mask" id="maskWatch">
+  <div class="modal">
+    <h3>加入自选</h3>
+    <div class="field"><label>代码 *（6 位数字，自动识别沪/深）</label><input id="wt_code" placeholder="如：600519 / 159915"></div>
+    <div class="field"><label>名称（可留空，行情里会带出来）</label><input id="wt_name" placeholder="如：贵州茅台"></div>
+    <div class="field"><label>分组 *</label>
+      <select id="wt_group">
+        <option value="etf">ETF</option>
+        <option value="stock" selected>股票</option>
+        <option value="other">其他（场外基金 / 逆回购等）</option>
+      </select>
+    </div>
+    <div class="field"><label>类型（可选；填「场外基金」则走净值，不取实时行情）</label><input id="wt_kind" placeholder="如：场外基金 / 国债逆回购"></div>
+    <div class="field"><label>备注（可选）</label><input id="wt_note" placeholder="如：白酒龙头"></div>
+    <div class="modal-btns">
+      <button class="btn-no" onclick="closeModal('maskWatch')">取消</button>
+      <button class="btn-ok" onclick="doWatchAdd()">确认加入</button>
+    </div>
+    <div id="msgWatch" class="msg"></div>
   </div>
 </div>
 
@@ -338,12 +488,87 @@ async function delPos(code) {
   else showMsg(r.msg, "err");
 }
 
+/* ================= 我的自选（只跟行情，没有成本 / 数量） ================= */
+let WATCH = [];
+const GROUP_LABEL = { etf: "ETF", stock: "股票", other: "其他" };
+
+function switchTab(which) {
+  const posOn = which === "pos";
+  $("tabPos").style.display = posOn ? "" : "none";
+  $("tabWatch").style.display = posOn ? "none" : "";
+  const on = "border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;background:#1f2d3d;color:#fff;";
+  const off = "border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;background:#e8ecf2;color:#5a6573;";
+  $("tabBtnPos").setAttribute("style", posOn ? on : off);
+  $("tabBtnWatch").setAttribute("style", posOn ? off : on);
+  if (!posOn) refreshWatch();
+}
+
+function renderWatch() {
+  const tb = $("wtbody");
+  tb.innerHTML = "";
+  $("wtempty").style.display = WATCH.length ? "none" : "block";
+  WATCH.forEach(p => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><b>${p.name}</b></td><td>${p.code}</td>` +
+      `<td><a class="op" onclick="editWatchField('${p.code}','group')">${GROUP_LABEL[p.group] || p.group}</a></td>` +
+      `<td style="color:#8a94a3;font-size:12px">${p.kind || "-"}</td>` +
+      `<td style="color:#8a94a3;font-size:12px">${p.note || ""}</td>` +
+      `<td class="op"><a onclick="editWatchField('${p.code}','note')">改备注</a>` +
+      `<a class="del" onclick="delWatch('${p.code}')">删除</a></td>`;
+    tb.appendChild(tr);
+  });
+}
+
+async function refreshWatch() {
+  const r = await api("/api/watchlist");
+  if (r.ok) { WATCH = r.items || []; renderWatch(); }
+}
+
+function openWatchAdd() { $("maskWatch").classList.add("show"); $("wt_code").focus(); }
+
+async function doWatchAdd() {
+  const r = await api("/api/watch/add", {
+    code: $("wt_code").value, name: $("wt_name").value,
+    group: $("wt_group").value, kind: $("wt_kind").value, note: $("wt_note").value
+  });
+  showIn("msgWatch", r.msg, r.ok ? "ok" : "err");
+  if (r.ok) {
+    ["wt_code", "wt_name", "wt_kind", "wt_note"].forEach(id => $(id).value = "");
+    WATCH = r.items; renderWatch(); closeModal("maskWatch"); showMsg("已加入自选 ✓", "ok");
+  }
+}
+
+async function editWatchField(code, field) {
+  let v;
+  if (field === "group") {
+    v = prompt("改分组：填 etf / stock / other", (WATCH.find(x => x.code === code) || {}).group || "");
+  } else {
+    v = prompt(`请输入新的${field === "note" ? "备注" : "名称"}（代码 ${code}）`);
+  }
+  if (v === null || v === "") return;
+  const r = await api("/api/watch/update", { code, field, value: v });
+  if (r.ok) { WATCH = r.items; renderWatch(); showMsg("已修改 ✓", "ok"); }
+  else showMsg(r.msg, "err");
+}
+
+async function delWatch(code) {
+  if (!confirm(`确认从自选中删除 ${code}？`)) return;
+  const r = await api("/api/watch/delete", { code });
+  if (r.ok) { WATCH = r.items; renderWatch(); showMsg("已删除 ✓", "ok"); }
+  else showMsg(r.msg, "err");
+}
+
+["wt_code", "wt_name", "wt_kind", "wt_note"].forEach(id => {
+  $(id).addEventListener("keydown", e => { if (e.key === "Enter") doWatchAdd(); });
+});
+
 // 回车提交
 ["buy_name","buy_code","buy_cost","buy_shares","buy_note"].forEach((id,i) => {
   $(id).addEventListener("keydown", e => { if (e.key === "Enter") doBuy(); });
 });
 
 refresh();
+refreshWatch();
 </script>
 </body>
 </html>
@@ -379,6 +604,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(PAGE_HTML)
         elif parsed.path == "/api/positions":
             self._send_json(api_positions())
+        elif parsed.path == "/api/watchlist":
+            self._send_json(api_watchlist())
         else:
             self._send_json({"ok": False, "msg": "not found"}, 404)
 
@@ -392,6 +619,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(api_delete(params))
             elif parsed.path == "/api/update":
                 self._send_json(api_update(params))
+            elif parsed.path == "/api/watch/add":
+                self._send_json(api_watch_add(params))
+            elif parsed.path == "/api/watch/delete":
+                self._send_json(api_watch_delete(params))
+            elif parsed.path == "/api/watch/update":
+                self._send_json(api_watch_update(params))
             else:
                 self._send_json({"ok": False, "msg": "not found"}, 404)
         except Exception as e:

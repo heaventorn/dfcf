@@ -3,21 +3,24 @@
 东方财富爬虫 - 主入口
 
 用法：
-    python main.py                  # 全流程：登录(如有需要) -> 采集当日市场 -> 生成主页并自动打开
+    python main.py                  # 全流程：登录(如有需要) -> 采集当日市场 -> 生成主页并打开独立窗口
     python main.py --login-only     # 仅执行登录并保存 Cookie
     python main.py --no-login       # 跳过登录，直接用公开接口采集（行情数据无需登录）
-    python main.py --no-open        # 生成完成后不自动打开浏览器
+    python main.py --no-open        # 生成完成后不自动打开窗口
 
 输出：
     output/latest_market.json          原始采集数据
     output/history.db                  历史快照库（每轮一条，趋势/环比查询：python history.py）
     output/index.html                  主页「3D 地球指挥台」= 中间 3D 地球
-                                       + 左侧「大A行情概况 + 白底可缩放行情图 / 新闻·日历」
-                                       + 右侧「我的持仓 + 配置标的行情 / 空中飞人指数」
+                                       + 左侧「大A行情概况 + 深色可缩放行情图 / 新闻·日历」
+                                       + 右侧「我的持仓 + 我的自选 / 空中飞人指数」
 
 主页通过本地静态服务访问：http://127.0.0.1:8766/output/index.html
-（走 http 而不是 file://：浏览器的 file:// 安全策略会拦截页面读取本地 8K 地球贴图，
+（走 http 而不是 file://：浏览器的 file:// 安全策略会拦截页面读取本地地球贴图，
   表现为「国界/光点都在，但地球是黑球、只剩一圈亮边」。）
+
+打开方式：优先用 Edge 的 --app 参数开一个「没有地址栏 / 标签栏」的独立窗口，看起来
+就是个本地应用；本机找不到 Edge 时自动退回系统默认浏览器。--no-open 可完全跳过。
 
 运行完会自动后台拉起两个常驻服务并打开主页：
     8766  主页 + 实时新闻服务(live_server.py，每 5 分钟自动刷新全球新闻)
@@ -153,15 +156,59 @@ def _start_services():
         return False
 
 
+# Edge 的几种常见安装位置（64 位系统上也可能只装了 32 位那份）
+_EDGE_CANDIDATES = (
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Microsoft\Edge\Application\msedge.exe"),
+)
+
+
+def _find_edge():
+    """找一个可用的 Edge 可执行文件；找不到返回 None。"""
+    for p in _EDGE_CANDIDATES:
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def _open_app_window(url):
+    """用 Edge 的 --app 模式开一个「没有地址栏/标签栏」的独立窗口。
+
+    --app 是 Chromium 系的内置参数：窗口里只有网页内容，看起来就是个本地应用，
+    比自己用 Qt 内嵌一个浏览器省事得多（渲染内核本来就是同一个）。
+    --user-data-dir 单独放一份 profile，免得和日常浏览器的标签/窗口混在一起。
+    返回 True 表示已用这种方式打开；False 表示环境不支持，调用方应退回 webbrowser。
+    """
+    exe = _find_edge()
+    if not exe:
+        return False
+    try:
+        import subprocess
+        profile = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".edge_profile")
+        subprocess.Popen([
+            exe,
+            "--app=" + url,
+            "--window-size=1600,940",
+            "--user-data-dir=" + profile,
+        ])
+        return True
+    except Exception:
+        return False
+
+
 def _open_page(home_path, serve_ok):
-    """在浏览器打开主页；主页服务未就绪时退回 file://。"""
+    """打开主页：优先用 Edge 的 --app 独立窗口，退化时用系统默认浏览器。"""
     if not home_path:
         print("[提示] 主页未生成，跳过自动打开。")
         return
     try:
-        import webbrowser
         from pathlib import Path
         url = PAGE_URL if serve_ok else Path(home_path).resolve().as_uri()
+        if _open_app_window(url):
+            print("✓ 已打开主页窗口（Edge --app，无地址栏）:", url)
+            return
+        import webbrowser
         webbrowser.open(url)
         print("✓ 已在浏览器打开主页:", url)
     except Exception as e:

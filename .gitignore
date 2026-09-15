@@ -14,6 +14,8 @@ cookies.json
 
 # ===== 本地临时 / 调试文件 =====
 _pyramid_preview.html
+# Edge --app 独立窗口模式用的专用 profile（由 main.py 创建）
+.edge_profile/
 _probe_em.py
 _probe_tx.py
 *.bak
@@ -30,6 +32,16 @@ pwd.key
 # 误生成的空文件
 0
 0.5
+# 误生成的空文件（本次会话产生，锚定到仓库根）
+/1000
+/'
+# 与本项目无关的本地实验目录（3D 个人网站模板 / Playwright 截图验证工具）
+_site_src/
+_site_tools/
+reasonix.toml
+# 本地实验遗留的大体积素材（本项目代码不引用；Natural Earth 原始 geojson + 字体）
+assets/fonts/
+assets/geo/
 # 预览页(由 events.py 生成,不入库)
 events_live.html
 # 已弃用的大贴图:云层/昼夜效果已移除(本地保留,不入库)

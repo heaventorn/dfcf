@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""补充信源:财联社电报 + 金十快讯
+"""补充信源:财联社电报 + 金十快讯（+ 同花顺 / 新浪 7x24）
 ================================================
 两个都是公开可抓的免费接口(属逆向私有接口,改版可能失效,因此都做成"可独立失败",
 任意一个不可用都不影响主页生成)。
@@ -7,17 +7,27 @@
 财联社  GET https://www.cls.cn/api/cache?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9
         Referer: https://www.cls.cn/telegraph
         返回 data.roll_data[]:id / title / brief / content / ctime(秒) / level(加红要闻为 A、B)
+        原文链接由 id 拼:https://www.cls.cn/detail/{id}
         注:老接口 /nodeapi/telegraphList(+本地 sign)已下线(404),故走公开缓存接口
 
 金十    GET https://flash-api.jin10.com/get_flash_list?channel=-8200&vip=1
         头:Referer / Origin = https://www.jin10.com/、x-app-id、x-version: 1.0.0
         x-app-id 是页面里的公开常量,运行时从官网 JS(chunk-common.*.js)提取,
         失败则回退内置常量(实测可用);取出后缓存 1 小时
-        返回 data[]:data.content / time(已是北京时间字符串) / important(1 = 要闻)
+        返回 data[]:data.content / time(已是北京时间字符串) / important(1 = 要闻) / id
+        原文链接由 id 拼:https://www.jin10.com/flash/{id}（金十未给直链;若失效改这一行）
 
-对外接口:
-    fetch_cls(limit)   -> [{time, title, src:'财联社', important}]
-    fetch_jin10(limit) -> [{time, title, src:'金十', important}]
+同花顺  GET https://news.10jqka.com.cn/tapp/news/push/stock/
+        返回 data.list[]:title / digest / ctime(秒) / color(2|3 为加红) / url(直链)
+
+新浪    GET https://zhibo.sina.com.cn/api/zhibo/feed  (zhibo_id=152, 7x24)
+        返回 result.data.feed.list[]:rich_text / create_time / docurl(直链)
+
+对外接口(每条都带 url,拿不到就是空串,前端会退化成不可点):
+    fetch_cls(limit)   -> [{time, title, src, important, url}]
+    fetch_jin10(limit) -> [{time, title, src, important, url}]
+    fetch_ths(limit)   -> [{time, title, src, important, url}]
+    fetch_sina(limit)  -> [{time, title, src, important, url}]
     dedup_key(title)   -> 跨信源近似去重用的 key(去标点后的前 24 字)
     SOURCE_STATUS      -> {源名: 本次条数}(-1 表示该源抓取失败)
 """
@@ -53,6 +63,18 @@ def _ts2str(v):
     if n > 1e12:
         n /= 1000.0
     return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(n) + 8 * 3600))
+
+
+def _clean_url(u):
+    """规整原文链接:补协议头、丢掉非 http(s) 的东西;拿不到就返回空串。"""
+    u = (u or "").strip()
+    if not u:
+        return ""
+    if u.startswith("//"):
+        return "https:" + u
+    if not u.startswith(("http://", "https://")):
+        return ""
+    return u
 
 
 def dedup_key(title):
@@ -93,7 +115,7 @@ def _jin10_app_id():
 
 
 def fetch_cls(limit=None):
-    """财联社电报(公开缓存接口)。返回 [{time, title, src, important}]。"""
+    """财联社电报(公开缓存接口)。返回 [{time, title, src, important, url}]。"""
     import config as _cfg
     if limit is None:
         limit = int(getattr(_cfg, "NEWS_CLS_LIMIT", 150))
@@ -113,13 +135,15 @@ def fetch_cls(limit=None):
         if not title:
             continue
         lv = (it.get("level") or "").upper()
+        cid = it.get("id")
         out.append({"time": _ts2str(it.get("ctime")), "title": title,
-                    "src": "财联社", "important": 1 if lv in ("A", "B") else 0})
+                    "src": "财联社", "important": 1 if lv in ("A", "B") else 0,
+                    "url": ("https://www.cls.cn/detail/%s" % cid) if cid else ""})
     return out
 
 
 def fetch_jin10(limit=None):
-    """金十快讯(channel=-8200 全球)。返回 [{time, title, src, important}]。"""
+    """金十快讯(channel=-8200 全球)。返回 [{time, title, src, important, url}]。"""
     import config as _cfg
     if limit is None:
         limit = int(getattr(_cfg, "NEWS_JIN10_LIMIT", 150))
@@ -136,8 +160,10 @@ def fetch_jin10(limit=None):
         title = _clip(_strip_html(d.get("content") or d.get("title") or ""))
         if not title:
             continue
+        fid = it.get("id")
         out.append({"time": (it.get("time") or "").strip(), "title": title,
-                    "src": "金十", "important": int(it.get("important") or 0)})
+                    "src": "金十", "important": int(it.get("important") or 0),
+                    "url": ("https://www.jin10.com/flash/%s" % fid) if fid else ""})
         if len(out) >= limit:
             break
     return out
@@ -147,7 +173,7 @@ THS_URL = "https://news.10jqka.com.cn/tapp/news/push/stock/"
 
 
 def fetch_ths(limit=None, pages=None, page_size=100):
-    """同花顺快讯(公开接口)。返回 [{time, title, src:'同花顺', important}]。"""
+    """同花顺快讯(公开接口)。返回 [{time, title, src:'同花顺', important, url}]。"""
     import config as _cfg
     if limit is None:
         limit = int(getattr(_cfg, "NEWS_THS_LIMIT", 400))
@@ -173,7 +199,9 @@ def fetch_ths(limit=None, pages=None, page_size=100):
             if not title:
                 continue
             out.append({"time": _ts2str(it.get("ctime")), "title": title,
-                        "src": "同花顺", "important": 1 if str(it.get("color") or "") in ("2", "3") else 0})
+                        "src": "同花顺",
+                        "important": 1 if str(it.get("color") or "") in ("2", "3") else 0,
+                        "url": _clean_url(it.get("url") or it.get("shareUrl") or "")})
             if len(out) >= limit:
                 return out
         time.sleep(0.2)
@@ -184,7 +212,7 @@ SINA_URL = "https://zhibo.sina.com.cn/api/zhibo/feed"
 
 
 def fetch_sina(limit=None, pages=None, page_size=100):
-    """新浪财经 7x24 直播（可翻页，历史约 900 条）。返回 [{time, title, src, important}]。
+    """新浪财经 7x24 直播（可翻页，历史约 900 条）。返回 [{time, title, src, important, url}]。
 
     与 sources._sina_news 用的是同一接口，但那边只取首页做「财经快讯」展示，
     这里翻页取回当天全部，供全球事件地球使用。
@@ -215,8 +243,10 @@ def fetch_sina(limit=None, pages=None, page_size=100):
             title = _clip(_strip_html(it.get("rich_text") or ""))
             if not title:
                 continue
+            ext = it.get("ext") if isinstance(it.get("ext"), dict) else {}
             out.append({"time": (it.get("create_time") or "").strip(), "title": title,
-                        "src": "新浪", "important": 0})
+                        "src": "新浪", "important": 0,
+                        "url": _clean_url(it.get("docurl") or ext.get("docurl") or "")})
             if len(out) >= limit:
                 return out
         time.sleep(0.2)
@@ -230,11 +260,14 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-    for name, fn in (("财联社", fetch_cls), ("金十", fetch_jin10)):
+    for name, fn in (("财联社", fetch_cls), ("金十", fetch_jin10),
+                     ("同花顺", fetch_ths), ("新浪", fetch_sina)):
         try:
-            rows = fn()
-            print("==", name, "条数:", len(rows))
-            for x in rows[:5]:
-                print("   ", x["time"], "要闻" if x.get("important") else "   ", "|", x["title"][:56])
+            rows = fn(limit=5)
+            print("==", name, "条数:", len(rows),
+                  "| 带链接:", sum(1 for x in rows if x.get("url")))
+            for x in rows[:3]:
+                print("   ", x["time"], "|", x["title"][:40])
+                print("      ", x.get("url") or "(无链接)")
         except Exception as e:
             print("==", name, "失败:", e.__class__.__name__, e)
