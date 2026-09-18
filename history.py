@@ -74,6 +74,19 @@ CREATE TABLE IF NOT EXISTS source_health (
     FOREIGN KEY (snapshot_id) REFERENCES snapshots(id)
 );
 CREATE INDEX IF NOT EXISTS idx_health_snapshot ON source_health(snapshot_id);
+
+CREATE TABLE IF NOT EXISTS risk_snapshots (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    total       REAL,
+    level_name  TEXT,
+    dims        TEXT,
+    signals     TEXT,
+    refs        TEXT,
+    note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_risk_ts ON risk_snapshots(ts);
 """
 
 
@@ -197,6 +210,32 @@ def record_run(data, health=None, note=None, db_path=None):
         conn.close()
 
 
+def record_risk(res, refs=None, note=None, db_path=None):
+    """落一条空中飞人指数快照，供分层减仓和后续回测使用。"""
+    if not res:
+        return None
+    row = {
+        "ts": str(res.get("time") or _now()),
+        "recorded_at": _now(),
+        "total": _num(res.get("total")),
+        "level_name": res.get("level_name"),
+        "dims": json.dumps(res.get("dims") or [], ensure_ascii=False),
+        "signals": json.dumps(res.get("signals") or [], ensure_ascii=False),
+        "refs": json.dumps(refs or [], ensure_ascii=False),
+        "note": note,
+    }
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            "INSERT INTO risk_snapshots (ts, recorded_at, total, level_name, "
+            "dims, signals, refs, note) VALUES (:ts, :recorded_at, :total, "
+            ":level_name, :dims, :signals, :refs, :note)", row)
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------- 查询
 
 _SUMMARY_COLS = ("id, ts, recorded_at, breadth_up, breadth_down, breadth_flat, "
@@ -260,6 +299,36 @@ def series(field, days=30, db_path=None):
             f"SELECT ts, {field} AS value FROM snapshots "
             "WHERE ts >= ? ORDER BY ts ASC, id ASC", (cutoff,)).fetchall()
         return [(r["ts"], r["value"]) for r in rows]
+    finally:
+        conn.close()
+
+
+def risk_latest(db_path=None):
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM risk_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        for key in ("dims", "signals", "refs"):
+            try:
+                out[key] = json.loads(out.get(key) or "[]")
+            except Exception:
+                out[key] = []
+        return out
+    finally:
+        conn.close()
+
+
+def risk_series(db_path=None):
+    """返回空中飞人总分的 [(ts, total)]，按时间升序。"""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT ts, total FROM risk_snapshots "
+            "WHERE total IS NOT NULL ORDER BY ts ASC, id ASC").fetchall()
+        return [(r["ts"], r["total"]) for r in rows]
     finally:
         conn.close()
 

@@ -169,6 +169,7 @@ def api_add(params):
     cost = params.get("cost")
     shares = params.get("shares")
     note = (params.get("note") or "").strip()
+    bucket = (params.get("bucket") or "").strip()
     if not name or not code:
         return {"ok": False, "msg": "名称和代码不能为空"}
     try:
@@ -201,6 +202,7 @@ def api_add(params):
             "cost": cost,
             "shares": shares,
             "note": note or "",
+            "bucket": bucket,
         })
     save_positions(data)
     return {"ok": True, "msg": "已买入/加入", "positions": data["positions"]}
@@ -237,7 +239,7 @@ def api_update(params):
     code = (params.get("code") or "").strip()
     field = params.get("field")
     value = params.get("value")
-    if not code or field not in ("cost", "shares", "note"):
+    if not code or field not in ("cost", "shares", "note", "bucket"):
         return {"ok": False, "msg": "参数错误"}
     data = load_positions()
     idx, pos = find_pos(data, code)
@@ -257,13 +259,15 @@ def api_update(params):
             return {"ok": False, "msg": "数量必须是数字"}
         if value <= 0:
             return {"ok": False, "msg": "数量必须大于 0"}
-    data["positions"][idx][field] = value
+    data["positions"][idx][field] = (value or "").strip() if field == "bucket" else value
     save_positions(data)
     return {"ok": True, "msg": "已修改", "positions": data["positions"]}
 
 
 # ---------------- HTTP 服务 ----------------
-PAGE_HTML = """<!DOCTYPE html>
+# 注意：这是**原始字符串**（r"""）—— 里面的 JS 有 \b \/ \. 这类正则转义，
+# 用普通字符串会被 Python 抢先解释（\b 会变成退格符，正则静默失效）。
+PAGE_HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -275,6 +279,8 @@ PAGE_HTML = """<!DOCTYPE html>
   .wrap { max-width: 920px; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color:#8a94a3; font-size: 12px; margin-bottom: 18px; }
+  .back { display:inline-block; margin:0 0 10px -2px; color:#3b82f6; text-decoration:none; font-size:13px; }
+  .back:hover { text-decoration:underline; }
   .toolbar { display:flex; gap:12px; margin-bottom: 16px; }
   .btn { border:none; border-radius:8px; padding:10px 18px; font-size:14px; font-weight:700; cursor:pointer; color:#fff; }
   .btn-buy { background:#12a15d; }
@@ -305,6 +311,7 @@ PAGE_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
+  <a class="back" id="backLink" href="#">← 返回主界面</a>
   <h1>📊 个人投资组合 · 持仓与自选</h1>
   <div class="sub">修改结果实时写入 positions.json / watchlist.json，下次运行爬虫即生效 · 服务仅本机可用</div>
 
@@ -566,6 +573,39 @@ async function delWatch(code) {
 ["buy_name","buy_code","buy_cost","buy_shares","buy_note"].forEach((id,i) => {
   $(id).addEventListener("keydown", e => { if (e.key === "Enter") doBuy(); });
 });
+
+/* ================= 返回主界面 =================
+   主界面是 8766 上的地球指挥台，这里是 8765，属于另一个页面；点进来时主界面
+   会把 home=<主页地址> 带在 URL 上，返回键照它退回去（用 file:// 直接打开主页
+   时同样成立）。没带参数（收藏 / 手输地址 / 独立启动）就退回默认主页地址。
+   能退历史就退历史：浏览器缓存里那一页筛选、滚动位置都还在。 */
+function homeUrl() {
+  const m = location.search.match(/[?&]home=([^&]*)/);
+  return (m && m[1]) ? decodeURIComponent(m[1]) : "http://127.0.0.1:8766/output/index.html";
+}
+function goBack() {
+  const ref = document.referrer || "";
+  // 本机来路（主页 8766 / 策略台 / 别的本机页面）：能退历史就退历史。
+  // 用前缀判断而不是正则，省得在 Python 字符串里写一堆反斜杠。
+  const fromLocal = ["http://127.0.0.1", "https://127.0.0.1",
+                     "http://localhost", "https://localhost"]
+    .some(p => ref.indexOf(p) === 0);
+  if (history.length > 1 && fromLocal) history.back();
+  else location.href = homeUrl();
+}
+$("backLink").href = homeUrl();
+$("backLink").onclick = ev => { ev.preventDefault(); goBack(); };
+document.addEventListener("keydown", ev => {
+  const t = (ev.target && ev.target.tagName || "").toLowerCase();
+  // 输入框里按 Esc 只是清空输入；弹窗打开时先关弹窗（否则想取消却退回主页）
+  if (ev.key !== "Escape" || t === "input" || t === "textarea" || t === "select") return;
+  const open = ["maskBuy", "maskSell", "maskWatch"].find(id => $(id).classList.contains("show"));
+  if (open) closeModal(open);
+  else goBack();
+});
+
+// 主界面的「添加自选 / 管理自选」带 tab=watch 进来，直接落在自选那一栏
+if (/[?&]tab=watch(&|$)/.test(location.search)) switchTab("watch");
 
 refresh();
 refreshWatch();

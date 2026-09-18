@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>家庭资产 · 策略执行台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background:#f4f6f9;
+         margin:0; padding:20px; color:#1f2d3d; font-size:14px; }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  .topbar { margin-bottom: 10px; }
+  .topbar .back { display:inline-block; font-size:13px; font-weight:700; text-decoration:none;
+    color:#1f2d3d; background:#fff; border:1px solid #d7dce3; border-radius:8px; padding:7px 14px;
+    box-shadow:0 1px 4px rgba(0,0,0,.05); }
+  .topbar .back:hover { border-color:#3b82f6; color:#3b82f6; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color:#8a94a3; font-size: 12px; }
+  a { color:#3b82f6; }
+  .bar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:16px 0; }
+  select, input[type=number], input[type=text], textarea {
+    padding:8px 10px; border:1px solid #d7dce3; border-radius:7px; font-size:13px;
+    font-family:inherit; background:#fff; }
+  select { min-width:190px; font-weight:700; }
+  .btn { border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:700;
+         cursor:pointer; background:#1f2d3d; color:#fff; }
+  .btn.ghost { background:#e8ecf2; color:#3d4a5c; }
+  .btn.go { background:#12a15d; }
+  .btn.warn { background:#e08b2a; }
+  .btn:hover { opacity:.88; }
+  .btn:disabled { opacity:.45; cursor:not-allowed; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+  .card { background:#fff; border-radius:10px; padding:14px 16px; box-shadow:0 1px 6px rgba(0,0,0,.06); }
+  .card .k { color:#8a94a3; font-size:12px; }
+  .card .v { font-size:20px; font-weight:700; margin-top:4px; }
+  .card .n { color:#8a94a3; font-size:11px; margin-top:3px; }
+  .panel { background:#fff; border-radius:10px; padding:16px; margin-top:14px;
+           box-shadow:0 1px 6px rgba(0,0,0,.06); }
+  .panel h3 { margin:0 0 12px; font-size:15px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:8px; text-align:left; border-bottom:1px solid #eef1f5; }
+  th { color:#8a94a3; font-weight:600; font-size:12px; white-space:nowrap; }
+  td.num, th.num { text-align:right; }
+  tr.hot td { background:#fff7ec; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:20px; font-size:11px; font-weight:700; }
+  .tag.buy { background:#e6f7ef; color:#12a15d; }
+  .tag.sell { background:#fdeaea; color:#e64545; }
+  .tag.hold { background:#eef1f5; color:#8a94a3; }
+  .tag.skip { background:#fdf3e2; color:#b57712; }
+  .tag.on { background:#fdeaea; color:#e64545; }
+  .tag.off { background:#e6f7ef; color:#12a15d; }
+  .tabs { display:flex; gap:8px; margin:16px 0 0; }
+  .tab { border:none; border-radius:8px 8px 0 0; padding:10px 20px; font-size:13px;
+         font-weight:700; cursor:pointer; background:#e8ecf2; color:#5a6573; }
+  .tab.on { background:#fff; color:#1f2d3d; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:900px) { .grid2 { grid-template-columns:1fr; } }
+  .note { color:#8a94a3; font-size:12px; line-height:1.8; }
+  .msg { font-size:12px; margin-top:10px; }
+  .msg.ok { color:#12a15d; } .msg.err { color:#e64545; }
+  .out { white-space:pre-wrap; line-height:1.85; font-size:13.5px; }
+  .spinner { color:#8a94a3; font-size:12px; }
+  .warnbox { background:#fff7ec; border-left:3px solid #e08b2a; padding:10px 12px;
+             border-radius:6px; font-size:12.5px; line-height:1.8; color:#7a5a1e; }
+  canvas { width:100%; height:340px; display:block; }
+  .radio { display:inline-flex; gap:6px; align-items:center; font-size:12px; color:#4a5568; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <a class="back" id="backLink" href="/output/index.html">← 返回地球指挥台</a>
+  </div>
+  <h1>家庭资产 · 策略执行台</h1>
+  <div class="sub">
+    <b>strategy.json</b> 是蓝图（该持有什么），<b>positions.json</b> 是账本（实际持有什么），
+    两者的差就是下面的买卖计划。系统不会自动下单，只有你点「确认执行」才写账本。
+    · <a href="#" id="homeLink2">回主页</a> · <a id="pmLink" href="http://127.0.0.1:8765/">持仓 / 自选</a>
+    · 按 Esc 也能返回
+  </div>
+
+  <div class="bar">
+    <select id="sid" onchange="switchStrategy(this.value)"></select>
+    <button class="btn ghost" onclick="load()">↻ 刷新</button>
+    <button class="btn ghost" onclick="warm()">⟳ 重取数据</button>
+    <button class="btn" onclick="setTab('llm')">🤖 模型分析</button>
+    <label class="radio">总额
+      <input type="number" id="capital" style="width:130px" placeholder="可投资总额">
+      <button class="btn ghost" onclick="saveAccount()">保存</button>
+    </label>
+    <span id="status" class="spinner"></span>
+  </div>
+
+  <div class="cards" id="cards"></div>
+  <div class="warnbox" id="warnbox" style="display:none;margin-top:14px"></div>
+
+  <div class="tabs">
+    <button class="tab on" id="tab-plan" onclick="setTab('plan')">配置与计划</button>
+    <button class="tab" id="tab-bt" onclick="setTab('bt')">回测对照</button>
+    <button class="tab" id="tab-llm" onclick="setTab('llm')">模型分析</button>
+    <button class="tab" id="tab-data" onclick="setTab('data')">数据</button>
+  </div>
+
+  <!-- ============ 配置与计划 ============ -->
+  <div id="pane-plan">
+    <div class="panel">
+      <h3>配置对照（目标 vs 实际）</h3>
+      <table>
+        <thead><tr>
+          <th>资产桶</th><th>分组</th><th class="num">目标</th><th class="num">实际</th>
+          <th class="num">漂移</th><th class="num">溢价</th><th class="num">目标金额</th><th class="num">当前金额</th>
+          <th class="num">差额</th><th>标的</th>
+        </tr></thead>
+        <tbody id="alloc"></tbody>
+      </table>
+      <div class="note" id="allocNote" style="margin-top:10px"></div>
+    </div>
+
+    <div class="panel">
+      <h3>买卖计划</h3>
+      <div id="planSummary" class="note" style="margin-bottom:10px"></div>
+      <table>
+        <thead><tr>
+          <th>资产桶</th><th>动作</th><th>标的</th><th class="num">参考价</th>
+          <th class="num">数量</th><th class="num">金额</th><th class="num">预估费</th><th>原因</th>
+        </tr></thead>
+        <tbody id="plan"></tbody>
+      </table>
+      <div class="bar">
+        <button class="btn go" id="applyBtn" onclick="applyPlan()">✓ 确认执行，写入账本</button>
+        <span class="note">只处理上面标了「买入 / 卖出」的行；买入成本按参考价记，成交后到持仓页改成实际价。</span>
+      </div>
+      <div id="planMsg" class="msg"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h3>未分类持仓</h3>
+        <div class="note">这些还挂在账本上但没归到任何资产桶，不参与配置计算。
+          要归类就在持仓页改，或在 <code>positions.json</code> 里加 <code>"bucket"</code> 字段。</div>
+        <table><tbody id="unclassified"></tbody></table>
+      </div>
+      <div class="panel">
+        <h3>执行记录</h3>
+        <table><tbody id="history"></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 回测 ============ -->
+  <div id="pane-bt" style="display:none">
+    <div class="panel">
+      <h3>净值曲线（对数刻度，起点 = 1）</h3>
+      <canvas id="chart"></canvas>
+      <div class="note" id="chartNote"></div>
+    </div>
+    <div class="panel">
+      <h3>全部方案对照（2006-01 起，含 2008 全球金融危机）</h3>
+      <div class="bar" style="margin:0 0 10px">
+        <label class="radio">费用
+          <select id="drag" style="min-width:auto" onchange="load()">
+            <option value="0">不扣费</option>
+            <option value="45">扣 0.45%/年</option>
+            <option value="80">扣 0.80%/年</option>
+          </select>
+        </label>
+        <span class="note">点表头行可切换策略</span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>方案</th><th>趋势闸</th><th class="num">年化</th><th class="num">最大回撤</th>
+          <th class="num">年化波动</th><th class="num">夏普</th>
+          <th class="num" title="历史上最差的一个完整自然年">最差单年</th>
+          <th class="num" title="任意一天买入并持有满 3 年，最坏的那一次的年化收益（负数才是真亏钱）">最差滚动3年</th>
+          <th class="num" title="净值跌下去之后，最长要等多久才回到前高（含中间等待的时间）">最长回本</th>
+        </tr></thead>
+        <tbody id="metrics"></tbody>
+      </table>
+      <div class="note" style="margin-top:8px">
+        最差单年 = 最差的一个完整自然年 ·
+        最差滚动3年 = 随便哪一天买入、持有满 3 年，最坏的那一次的年化（红字才是真亏钱）·
+        最长回本 = 从跌下去到重新创新高，最长等了多久
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>危机窗口</h3>
+        <table><thead><tr><th>窗口</th><th class="num">区间收益</th><th class="num">区间回撤</th></tr></thead>
+        <tbody id="crisis"></tbody></table>
+      </div>
+      <div class="panel">
+        <h3>分年度收益</h3>
+        <div style="max-height:300px;overflow:auto">
+        <table><tbody id="yearly"></tbody></table>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="warnbox" id="caveat"></div>
+    </div>
+  </div>
+
+  <!-- ============ 模型分析 ============ -->
+  <div id="pane-llm" style="display:none">
+    <div class="panel">
+      <h3>模型分析（DeepSeek）</h3>
+      <div class="note" id="llmState" style="margin-bottom:10px"></div>
+      <textarea id="question" rows="3" style="width:100%"
+        placeholder="不填就问默认问题：现在的配置和家庭目标是否一致、有没有需要马上处理的事、最该警惕什么。"></textarea>
+      <div class="bar">
+        <button class="btn go" id="llmBtn" onclick="runLLM()">发送快照给模型分析</button>
+        <select id="llmModel" style="min-width:auto"></select>
+        <span class="note">模型拿到的是真实持仓 + 目标权重 + 回测数字，不联网、不看新闻，
+          也不会给你买卖信号 —— 它的活是把这些数字读成人话。</span>
+      </div>
+      <div id="llmOut" class="out"></div>
+      <div id="llmThink"></div>
+      <div id="llmMsg" class="msg"></div>
+    </div>
+    <div class="panel">
+      <h3>发给模型的原始快照</h3>
+      <div class="note">模型能看到的就是这些。数字不对的话，先改数据，别指望模型帮你圆回来。</div>
+      <pre id="snap" style="max-height:420px;overflow:auto;font-size:12px;background:#fafbfc;
+        padding:12px;border-radius:8px;line-height:1.6"></pre>
+    </div>
+  </div>
+
+  <!-- ============ 数据 ============ -->
+  <div id="pane-data" style="display:none">
+    <div class="panel">
+      <h3>回测数据缓存</h3>
+      <div class="note" id="warmState" style="margin-bottom:10px"></div>
+      <table>
+        <thead><tr><th>来源</th><th>抓取日</th><th class="num">行数</th><th>起</th><th>止</th></tr></thead>
+        <tbody id="cache"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "-" : Number(v).toLocaleString("zh-CN", {minimumFractionDigits:d, maximumFractionDigits:d});
+const pct = (v, d=1) => (v === null || v === undefined || isNaN(v)) ? "-" : (v*100).toFixed(d) + "%";
+const spct = (v, d=1) => (v === null || v === undefined || isNaN(v)) ? "-" : (v>0?"+":"") + (v*100).toFixed(d) + "%";
+const yuan = v => (v === null || v === undefined || isNaN(v)) ? "-" : Number(v).toLocaleString("zh-CN", {maximumFractionDigits:0});
+
+let LIST = null, BOARD = null, TAB = "plan";
+
+async function api(path, data) {
+  const opt = { method: data ? "POST" : "GET", headers: { "Content-Type": "application/json" } };
+  if (data) opt.body = JSON.stringify(data);
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+function setStatus(t) { $("status").textContent = t || ""; }
+
+function setTab(t) {
+  TAB = t;
+  ["plan", "bt", "llm", "data"].forEach(k => {
+    $("pane-" + k).style.display = (k === t) ? "" : "none";
+    $("tab-" + k).className = "tab" + (k === t ? " on" : "");
+  });
+  if (t === "bt" && BOARD) drawChart();
+  if (t === "llm" && BOARD) loadSnapshot();
+}
+
+/* ================= 装载 ================= */
+async function boot() {
+  setStatus("读取策略清单…");
+  LIST = await api("/api/strategy/list");
+  if (!LIST || !LIST.ok) { setStatus("策略服务不可用"); return; }
+  const sel = $("sid");
+  sel.innerHTML = "";
+  LIST.items.forEach(it => {
+    const o = document.createElement("option");
+    o.value = it.id;
+    o.textContent = (it.cat ? it.cat + " · " : "") + it.name + (it.gate ? " 🛡" : "");
+    sel.appendChild(o);
+  });
+  sel.value = LIST.active;
+  $("capital").value = LIST.account.capital || "";
+  $("capital").placeholder = LIST.account.capital ? "" : "可投资总额（必填）";
+
+  const la = LIST.llm || {};
+  $("llmState").innerHTML = la.has_key
+    ? "✅ 已配置 Key（" + la.key_source + "）· 模型 " + la.model
+    : "⚠️ 还没配 API Key：" + (la.key_source || "") +
+      "<br>在项目目录建 secrets.json，内容 {\"deepseek_api_key\": \"sk-...\"}，" +
+      "或设环境变量 DEEPSEEK_API_KEY，然后重开服务。";
+  const ms = $("llmModel");
+  ms.innerHTML = "";
+  (la.models || [la.model]).forEach(m => {
+    const o = document.createElement("option"); o.value = m; o.textContent = m; ms.appendChild(o);
+  });
+  if (la.model) ms.value = la.model;
+
+  renderCache();
+  await load();
+}
+
+async function load() {
+  const sid = $("sid").value;
+  if (!sid) return;
+  setStatus("计算中（首次要取数，可能要几十秒）…");
+  const q = "/api/strategy/board?id=" + encodeURIComponent(sid) +
+            "&drag_bp=" + ($("drag") ? $("drag").value : 0);
+  BOARD = await api(q);
+  setStatus("");
+  if (!BOARD || !BOARD.ok) { $("alloc").innerHTML = "<tr><td colspan=10>加载失败：" + ((BOARD||{}).msg||"") + "</td></tr>"; return; }
+  // 一块面板报错不该让整页跟着白掉 —— 逐块 try，出错的在状态栏点名。
+  const panels = [["顶部卡片", renderCards], ["配置对照", renderAlloc], ["买卖计划", renderPlan],
+                  ["方案对照", renderMetrics], ["回测窗口", renderBT], ["流水", renderHistory]];
+  const bad = [];
+  panels.forEach(([n, f]) => { try { f(); } catch (e) { bad.push(n + "：" + e.message); } });
+  if (TAB === "bt") { try { drawChart(); } catch (e) { bad.push("净值曲线：" + e.message); } }
+  if (bad.length) setStatus("有面板渲染失败 → " + bad.join(" ｜ "));
+}
+
+async function switchStrategy(sid) {
+  await api("/api/strategy/active", { id: sid });
+  await load();
+}
+
+async function refresh() { LIST = await api("/api/strategy/list"); await load(); }
+
+async function saveAccount() {
+  const v = $("capital").value;
+  const r = await api("/api/strategy/account", { capital: v === "" ? 0 : v });
+  setStatus(r.ok ? "总额已保存" : ("保存失败：" + r.msg));
+  if (r.ok) { await refresh(); }
+  setTimeout(() => setStatus(""), 2500);
+}
+
+async function warm() {
+  setStatus("重新取数中（并发拉中证 / 东财）…");
+  const r = await api("/api/strategy/warm");
+  setStatus("取数已启动，稍后刷新即可");
+  setTimeout(async () => { await refresh(); }, 8000);
+}
+
+/* ================= 卡片 ================= */
+function renderCards() {
+  const m = BOARD.monitor, g = m.gate || {}, rb = LIST.rebalance || {};
+  const rs = m.risk || {};
+  const cards = [
+    { k: "可投资总额", v: "¥" + yuan(m.capital), n: m.capital ? "" : "还没填，去上面输入框填" },
+    { k: "已投入", v: "¥" + yuan(m.invested), n: m.capital ? pct(m.invested / m.capital) + " 仓位" : "" },
+    { k: "现金", v: "¥" + yuan(m.cash), n: m.capital ? pct(m.cash / m.capital) : "" },
+    { k: "风险减仓", v: rs.active ? "×" + fmt(rs.multiplier, 2) : (rs.enabled ? "正常" : "未启用"),
+      n: rs.enabled ? (rs.summary || "正常") : "risk_overlay.enabled=false",
+      cls: rs.active ? "tag on" : (rs.enabled ? "tag off" : "") },
+    { k: "趋势闸", v: g.ok ? (g.on ? "触发 · 打折" : "未触发") : "无数据",
+      n: g.ok ? ("H00300 " + g.date + " " + spct(g.gap) + " vs MA" + g.window) : (g.msg || ""),
+      cls: g.ok ? (g.on ? "tag on" : "tag off") : "" },
+    { k: "再平衡", v: rb.next && rb.next.date ? rb.next.date : "-",
+      n: rb.is_month ? "本月是再平衡月" : ("还有 " + (rb.next ? rb.next.in_days : "-") + " 天 · 每年 " + (rb.months||[]).join("/") + " 月") },
+  ];
+  $("cards").innerHTML = cards.map(c =>
+    '<div class="card"><div class="k">' + c.k + '</div><div class="v">' +
+    (c.cls ? '<span class="' + c.cls + '">' + c.v + '</span>' : c.v) +
+    '</div><div class="n">' + (c.n || "") + '</div></div>').join("");
+}
+
+/* ================= 配置对照 ================= */
+function navNote(b) {
+  if (b.nav_value === undefined || !b.actual_value) return "";
+  const gap = b.actual_value - b.nav_value;
+  if (Math.abs(gap) < Math.max(100, b.actual_value * 0.002)) return "";
+  return '<div class="note" style="font-size:11px">净值口径 ' + yuan(b.nav_value) +
+    '（溢价虚高 ' + yuan(gap) + '）</div>';
+}
+
+function premCell(b) {
+  const p = b.premium, g = b.premium_gate || {};
+  if (!p || p.premium === null || p.premium === undefined) {
+    return '<span style="color:#8a94a3">' + (g.level === "unknown" ? "?" : "—") + '</span>';
+  }
+  const col = g.level === "block" ? "#e64545"
+    : g.level === "warn" ? "#e08b2a"
+    : g.level === "good" ? "#12a15d" : "#8a94a3";
+  const badge = g.level === "block" ? "别买"
+    : g.level === "warn" ? "偏高"
+    : g.level === "good" ? "折价" : "";
+  let s = '<b style="color:' + col + '">' + spct(p.premium) + '</b>';
+  if (badge) s += ' <span style="color:' + col + '">' + badge + '</span>';
+  const st = p.stats || {};
+  if (st.n) {
+    s += '<div class="note" style="font-size:11px">3年分位 ' +
+      fmt(p.percentile, 0) + '% · 中位 ' + spct(st.median) + '</div>';
+  } else {
+    s += '<div class="note" style="font-size:11px">' +
+      (p.basis_src === "iopv" ? "按 IOPV" : "按最新净值") + '</div>';
+  }
+  return s;
+}
+
+function renderAlloc() {
+  const m = BOARD.monitor;
+  const rs = m.risk || {};
+  const warns = (m.warnings || []).concat((BOARD.plan && BOARD.plan.warnings) || []);
+  const uniq = [...new Set(warns)];
+  $("warnbox").style.display = uniq.length ? "" : "none";
+  $("warnbox").innerHTML = uniq.map(w => "⚠️ " + w).join("<br>");
+  let html = "";
+  const maxAbs = Math.max(0.02, ...m.buckets.map(b => Math.abs(b.drift)));
+  m.buckets.forEach(b => {
+    const w = Math.min(100, Math.abs(b.drift) / maxAbs * 100);
+    const color = b.over_band ? (b.drift > 0 ? "#e08b2a" : "#3b82f6") : "#cfd8e3";
+    html += '<tr' + (b.over_band ? ' class="hot"' : '') + '>' +
+      '<td><b>' + b.name + '</b></td>' +
+      '<td class="note">' + b.group + '</td>' +
+      '<td class="num">' + pct(b.target_w) + '</td>' +
+      '<td class="num">' + pct(b.actual_w) + '</td>' +
+      '<td class="num" style="color:' + (b.over_band ? "#e08b2a" : "#8a94a3") + '">' +
+        spct(b.drift) + '<div style="height:4px;background:#eef1f5;border-radius:2px;margin-top:4px">' +
+        '<div style="height:4px;width:' + w + '%;background:' + color + ';border-radius:2px"></div></div></td>' +
+      '<td class="num">' + premCell(b) + '</td>' +
+      '<td class="num">' + yuan(b.target_value) + '</td>' +
+      '<td class="num">' + yuan(b.actual_value) + navNote(b) + '</td>' +
+      '<td class="num" style="color:' + (b.delta_value > 0 ? "#12a15d" : "#e64545") + '">' +
+        (b.delta_value > 0 ? "+" : "") + yuan(b.delta_value) + '</td>' +
+      '<td class="note">' + (b.instruments || []).join(" / ") + '</td></tr>';
+  });
+  $("alloc").innerHTML = html;
+  const over = m.alerts.length;
+  $("allocNote").innerHTML = "单桶漂移超过 <b>" + pct(m.band, 0) + "</b> 才需要动手，" +
+    (over ? "现在有 <b style='color:#e08b2a'>" + over + "</b> 个桶超了。" : "现在一个都没超，不用动。") +
+    " <b>溢价</b>按场内价 ÷ IOPV 实时估值算：溢价高的时候买场内 ETF，等于一进场就先亏掉这部分，" +
+    "所以该买但溢价超上限的桶会被标成「暂缓买入」。" +
+    (m.gate_used !== null && m.gate_used !== undefined
+      ? " 当前目标权重" + (m.gate_used ? "已按趋势闸打折（风险资产砍半）" : "按标准配置") + "。" : "") +
+    (rs.enabled ? " 风险预算 ×" + fmt(rs.multiplier, 2) + "：" + (rs.summary || "正常") + "。" : "");
+}
+
+/* ================= 计划 ================= */
+function renderPlan() {
+  const p = BOARD.plan;
+  $("applyBtn").disabled = !!p.blocked;
+  if (!p.ok) { $("plan").innerHTML = "<tr><td colspan=8>计划生成失败：" + (p.msg||"") + "</td></tr>"; return; }
+  const tagname = a => a === "买入" ? "buy" : a === "卖出" ? "sell" : a === "跳过" ? "skip" : "hold";
+  let html = "";
+  p.rows.forEach(r => {
+    html += '<tr' + (r.action === "买入" || r.action === "卖出" ? ' class="hot"' : '') + '>' +
+      '<td>' + r.name + '</td>' +
+      '<td><span class="tag ' + tagname(r.action) + '">' + r.action + '</span></td>' +
+      '<td>' + (r.instrument || "-") + '</td>' +
+      '<td class="num">' + (r.price ? fmt(r.price, 3) : "-") + '</td>' +
+      '<td class="num">' + (r.shares || "-") + '</td>' +
+      '<td class="num">' + (r.amount ? yuan(r.amount) : "-") + '</td>' +
+      '<td class="num">' + (r.fee ? fmt(r.fee, 1) : "-") + '</td>' +
+      '<td class="note">' + (r.why || "") + '</td></tr>';
+  });
+  $("plan").innerHTML = html || '<tr><td colspan=8 class="note">没有需要动的桶。</td></tr>';
+  $("planSummary").innerHTML =
+    "买入合计 <b style='color:#12a15d'>¥" + yuan(p.total_buy) + "</b> · " +
+    "卖出合计 <b style='color:#e64545'>¥" + yuan(p.total_sell) + "</b> · " +
+    "净 " + (p.net >= 0 ? "投入 " : "收回 ") + "¥" + yuan(Math.abs(p.net)) + " · " +
+    "预估费用 ¥" + fmt(p.est_fee, 1) + " · 执行后现金 ¥" + yuan(p.cash_after) +
+    "<br>" + p.notes.join(" ") +
+    (p.blocked ? "<br><b style='color:#e64545'>计划已停用：先修正可投资总额。</b>" : "");
+}
+
+async function applyPlan() {
+  const p = BOARD.plan;
+  const rows = (p.rows || []).filter(r => r.action === "买入" || r.action === "卖出");
+  if (!rows.length) { $("planMsg").className = "msg err"; $("planMsg").textContent = "没有可执行的行。"; return; }
+  const n = rows.filter(r => r.action === "买入").length, s = rows.filter(r => r.action === "卖出").length;
+  if (!confirm("确认把 " + n + " 笔买入、" + s + " 笔卖出写入账本？\n这只改 positions.json，不会真的下单。")) return;
+  const r = await api("/api/strategy/apply", { rows: rows, id: BOARD.id });
+  $("planMsg").className = "msg " + (r.ok ? "ok" : "err");
+  $("planMsg").textContent = r.msg || "";
+  if (r.ok) { await refresh(); }
+}
+
+function renderHistory() {
+  api("/api/strategy/history?limit=8").then(r => {
+    if (!r.ok || !r.items.length) { $("history").innerHTML = '<tr><td class="note">还没有执行记录。</td></tr>'; return; }
+    $("history").innerHTML = r.items.map(h =>
+      '<tr><td class="note">' + h.at + '</td><td>' + h.strategy + '</td><td>' +
+      (h.trades || []).map(t => t.action + " " + t.code + "×" + t.shares).join("；") + '</td></tr>').join("");
+  });
+  const un = (BOARD.monitor.unclassified || []);
+  $("unclassified").innerHTML = un.length
+    ? un.map(p => '<tr><td>' + p.name + '</td><td class="note">' + p.code + '</td><td class="num">¥' + yuan(p.value) + '</td></tr>').join("")
+    : '<tr><td class="note">没有未分类持仓。</td></tr>';
+}
+
+/* ================= 回测 ================= */
+function renderMetrics() {
+  let html = "";
+  const order = (LIST.items || []).map(i => i.id);
+  const catOf = id => {
+    const it = (LIST.items || []).find(x => x.id === id);
+    return it && it.cat ? it.cat : "";
+  };
+  const wc = v => '<td class="num" style="' +
+    (v < 0 ? 'color:#e64545' : '') + '">' + spct(v) + '</td>';
+  order.forEach(id => {
+    const m = BOARD.metrics[id];
+    if (!m) return;
+    const on = id === BOARD.id;
+    const cat = catOf(id);
+    html += '<tr' + (on ? ' class="hot"' : '') + ' style="cursor:pointer" onclick="pick(\'' + id + '\')">' +
+      '<td>' + (cat ? '<span class="note">' + cat + '</span> ' : '') +
+        '<b>' + m.name + '</b></td>' +
+      '<td>' + (m.gate ? '<span class="tag on">有</span>' : '<span class="note">—</span>') + '</td>' +
+      '<td class="num">' + spct(m.cagr, 2) + '</td>' +
+      '<td class="num" style="color:#e64545">' + pct(m.mdd, 2) + '</td>' +
+      '<td class="num">' + pct(m.vol, 2) + '</td>' +
+      '<td class="num">' + fmt(m.sharpe, 2) + '</td>' +
+      wc(m.worst_year) +
+      wc(m.worst_3y) +
+      '<td class="num">' + fmt(m.under_years, 1) + ' 年</td></tr>';
+  });
+  $("metrics").innerHTML = html;
+}
+
+async function pick(id) { $("sid").value = id; await switchStrategy(id); }
+
+function renderBT() {
+  const r = BOARD.backtest;
+  if (!r || r.cagr === undefined) return;
+  const crisis = r.crisis || {};
+  $("crisis").innerHTML = Object.keys(crisis).map(k => {
+    const v = crisis[k];
+    if (!v) return '<tr><td>' + k + '</td><td class="num">-</td><td class="num">-</td></tr>';
+    return '<tr><td>' + k + '</td><td class="num">' + spct(v.ret) +
+      '</td><td class="num" style="color:#e64545">' + pct(v.mdd) + '</td></tr>';
+  }).join("");
+  const yrs = Object.keys(r.yearly || {}).sort();
+  $("yearly").innerHTML = yrs.map(y =>
+    '<tr><td>' + y + '</td><td class="num" style="color:' +
+    (r.yearly[y] >= 0 ? "#12a15d" : "#e64545") + '">' + spct(r.yearly[y]) + '</td></tr>').join("");
+  $("chartNote").innerHTML = "当前：" + r.name + " · 年化 " + spct(r.cagr, 2) +
+    " · 最大回撤 " + pct(r.mdd, 2) + "（" + r.mdd_from + " → " + r.mdd_at + "）" +
+    " · 样本 " + r.start + " ~ " + r.end + "（" + fmt(r.years, 1) + " 年）" +
+    (BOARD.drag_bp ? " · 已扣 " + (BOARD.drag_bp / 100).toFixed(2) + "%/年费用" : " · 未扣费率");
+  const caveats = [
+    "样本从 2006-01-04 开始，正好在 2006-07 那轮大牛市之前 —— 起点本身带顺风，",
+    "真实的长期预期应该往下调（我们的口径是 A4 类 5-6%、B10 类 4.5-5.5%、再减 0.4-0.5% ETF 费率）。",
+    "中证红利低波指数 2017 年才发布，2017 年之前是按规则回填的，存在幸存者偏差和因子挑选偏差；",
+    "它自己单独的最大回撤到过 -66%。港股红利 2014-11 之前没有全收益指数，是用价格指数 + 7.09% 年化股息补的。",
+    "港股红利有 20% 股息税，回测里没有逐笔扣。",
+    "回测不含交易成本和 ETF 跟踪误差，用上面的「费用」下拉框可以粗略扣一遍。",
+  ];
+  $("caveat").innerHTML = "<b>这些数字该怎么读</b><br>" + caveats.join("<br>");
+}
+
+/* ---- 净值曲线 ---- */
+function drawChart() {
+  const cvs = $("chart"), dpr = window.devicePixelRatio || 1;
+  const W = cvs.clientWidth, H = 340;
+  cvs.width = W * dpr; cvs.height = H * dpr;
+  const g = cvs.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const curves = BOARD.curves || {};
+  const base = curves[BOARD.id] || [];
+  if (base.length < 2) { g.fillStyle = "#8a94a3"; g.fillText("没有曲线数据", 20, 30); return; }
+
+  const P = { l: 52, r: 12, t: 14, b: 26 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const dates = base.map(p => p[0]);
+  const toDay = s => Date.UTC(+s.slice(0,4), +s.slice(4,6)-1, +s.slice(6,8)) / 86400000;
+  const x0 = toDay(dates[0]), x1 = toDay(dates[dates.length-1]);
+  let lo = Infinity, hi = -Infinity;
+  Object.values(curves).forEach(c => c.forEach(p => { if (p[1] < lo) lo = p[1]; if (p[1] > hi) hi = p[1]; }));
+  const ly = v => Math.log(Math.max(v, 1e-6));
+  const ylo = ly(lo), yhi = ly(hi);
+  const X = s => P.l + (x0 === x1 ? 0 : (toDay(s) - x0) / (x1 - x0) * iw);
+  const Y = v => P.t + ih - (ly(v) - ylo) / (yhi - ylo) * ih;
+
+  // 危机阴影
+  const spans = [["20071016","20090309","rgba(230,69,69,.08)"],
+                 ["20150612","20160128","rgba(224,139,42,.10)"],
+                 ["20200113","20200323","rgba(120,90,200,.10)"]];
+  spans.forEach(([a,b,col]) => {
+    if (a > dates[dates.length-1] || b < dates[0]) return;
+    const xa = X(a), xb = X(b);
+    g.fillStyle = col; g.fillRect(xa, P.t, Math.max(1, xb-xa), ih);
+  });
+
+  // 网格 + y 轴刻度（1x / 2x / 5x / 10x …）
+  g.strokeStyle = "#eef1f5"; g.fillStyle = "#8a94a3"; g.font = "11px sans-serif"; g.lineWidth = 1;
+  const ticks = [];
+  for (let e = Math.floor(ylo/Math.LN10); e <= Math.ceil(yhi/Math.LN10); e++)
+    [1,2,5].forEach(m => { const v = m * Math.pow(10, e); if (ly(v) >= ylo && ly(v) <= yhi) ticks.push(v); });
+  [...new Set(ticks)].forEach(v => {
+    const y = Y(v);
+    g.beginPath(); g.moveTo(P.l, y); g.lineTo(P.l + iw, y); g.stroke();
+    g.fillText(v >= 1 ? v.toFixed(v < 10 ? 1 : 0) + "x" : v, 8, y + 4);
+  });
+  // x 轴年份
+  let lastYr = "";
+  dates.forEach(s => {
+    const y = s.slice(0,4);
+    if (y !== lastYr && (+y % 2 === 0)) { g.fillText(y, X(s) - 12, H - 8); lastYr = y; }
+  });
+
+  // 其他策略：淡灰
+  Object.keys(curves).forEach(k => {
+    if (k === BOARD.id) return;
+    g.strokeStyle = "rgba(140,155,175,.30)"; g.lineWidth = 1;
+    g.beginPath();
+    curves[k].forEach((p, i) => { const x = X(p[0]), y = Y(p[1]); i ? g.lineTo(x,y) : g.moveTo(x,y); });
+    g.stroke();
+  });
+  // 当前策略：深色
+  g.strokeStyle = "#1f2d3d"; g.lineWidth = 2.2;
+  g.beginPath();
+  base.forEach((p, i) => { const x = X(p[0]), y = Y(p[1]); i ? g.lineTo(x,y) : g.moveTo(x,y); });
+  g.stroke();
+}
+
+/* ================= 模型分析 ================= */
+async function loadSnapshot() {
+  if (!BOARD) return;
+  const r = await api("/api/strategy/snapshot?id=" + encodeURIComponent(BOARD.id));
+  if (r.ok) $("snap").textContent = JSON.stringify(r.snapshot, null, 1);
+}
+
+async function runLLM() {
+  const b = $("llmBtn");
+  b.disabled = true; b.textContent = "模型思考中…（最长 90 秒）";
+  $("llmMsg").textContent = ""; $("llmOut").textContent = "";
+  const r = await api("/api/strategy/llm", {
+    question: $("question").value, id: BOARD.id, model: $("llmModel").value });
+  b.disabled = false; b.textContent = "发送快照给模型分析";
+  if (r.ok) {
+    $("llmOut").textContent = r.text;
+    // flash / v4-pro 是"先思考再作答"的两段式模型。思考过程默认折起来，
+    // 但给你留个入口 —— 判断它有没有在胡扯，看思考比看结论更有用。
+    $("llmThink").innerHTML = r.reasoning
+      ? '<details style="margin-top:10px"><summary style="cursor:pointer;color:#8a94a3;font-size:12px">' +
+        '模型的思考过程（' + r.reasoning.length + ' 字，点开可看）</summary>' +
+        '<div class="note" style="white-space:pre-wrap;margin-top:8px;line-height:1.7">' +
+        r.reasoning.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])) +
+        '</div></details>'
+      : "";
+    $("llmMsg").className = "msg ok";
+    $("llmMsg").textContent = "模型 " + r.model + " · " + (r.at || "") +
+      (r.usage ? (" · tokens " + (r.usage.total_tokens || "")) : "");
+  } else {
+    $("llmThink").innerHTML = "";
+    $("llmMsg").className = "msg err";
+    $("llmMsg").textContent = r.msg + (r.hint ? ("  " + r.hint) : "");
+  }
+}
+
+/* ================= 数据 ================= */
+function renderCache() {
+  const c = (LIST && LIST.cache) || [];
+  $("cache").innerHTML = c.length ? c.map(x =>
+    '<tr><td>' + x.key + '</td><td class="note">' + x.day + '</td><td class="num">' + x.rows +
+    '</td><td class="note">' + x.from + '</td><td class="note">' + x.to + '</td></tr>').join("")
+    : '<tr><td colspan=5 class="note">缓存是空的，点上面「重取数据」。</td></tr>';
+  const w = (LIST && LIST.warm) || {};
+  $("warmState").innerHTML = w.running ? "⏳ 正在取数…"
+    : (w.result ? ("上次取数 " + (w.at || "") + " · 成功 " + (w.result.ok||[]).length +
+       " 条 · 失败 " + (w.result.fail||[]).length + " 条 · 耗时 " + w.result.secs + "s")
+       : (w.error ? ("取数出错：" + w.error) : "还没取过数。"));
+}
+
+window.addEventListener("resize", () => { if (TAB === "bt" && BOARD) drawChart(); });
+
+/* ================= 同窗口返回 =================
+   主页右上角点进来走的是同一个窗口（和个股页一样），所以这里必须给一个
+   明确的返回键 —— 否则在 Edge 的 --app 独立窗口里（没有地址栏、没有后退
+   按钮）进去就出不来了。 */
+function homeUrl() {
+  return (location.protocol === "file:") ? "../output/index.html" : "/output/index.html";
+}
+function goBack() {
+  // 来路同源就 history.back()：退回的是浏览器缓存里的原样，主页的筛选、
+  // 滚动位置都还在，比重新加载一次好。直接敲地址进来的就退回主页地址。
+  const ref = document.referrer || "";
+  const fromSame = ref && location.origin !== "null" && ref.indexOf(location.origin) === 0;
+  if (history.length > 1 && fromSame) history.back();
+  else location.href = homeUrl();
+}
+$("backLink").href = homeUrl();
+$("backLink").onclick = ev => { ev.preventDefault(); goBack(); };
+// 持仓 / 自选管理页（8765）：同样走同一个窗口，带上 home= 让那边的返回键
+// 知道该退回策略台这一页；那边左上角也有返回键。
+$("pmLink").href = "http://127.0.0.1:8765/?home=" + encodeURIComponent(location.href);
+$("homeLink2").onclick = ev => { ev.preventDefault(); goBack(); };
+document.addEventListener("keydown", ev => {
+  // 输入框里按 Esc 不当作返回（否则想清空输入会把页面关掉）
+  const t = (ev.target && ev.target.tagName || "").toLowerCase();
+  if (ev.key === "Escape" && t !== "input" && t !== "textarea" && t !== "select") goBack();
+});
+
+boot();
+</script>
+</body>
+</html>

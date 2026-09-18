@@ -40,6 +40,15 @@ import config  # noqa: E402
 PORT = getattr(config, "LIVE_PORT", 8766)
 STATIC_EXT = (".jpg", ".jpeg", ".png", ".js", ".css", ".geojson")
 
+# 策略 / 回测 / 持仓计划接口。单独模块 + 兜底导入：
+# 万一策略层哪行写错了，新闻和主页照常跑，不能因为加功能把整站弄挂。
+try:
+    import strategy_api as STRATEGY_API  # noqa: E402
+    STRATEGY_ERR = None
+except Exception as _e:  # pragma: no cover
+    STRATEGY_API = None
+    STRATEGY_ERR = "%s: %s" % (type(_e).__name__, _e)
+
 
 # ---------------------------------------------------------------- 光点聚合
 
@@ -182,6 +191,27 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path, _, qs = self.path.partition("?")
+
+        # ---- 策略页：/strategy ----
+        if path in ("/strategy", "/strategy/"):
+            self.path = "/strategy.html"
+            return super().do_GET()
+
+        if path.startswith("/api/strategy"):
+            if STRATEGY_API is None:
+                self._json({"ok": False, "msg": "策略服务未启用：%s" % STRATEGY_ERR}, 503)
+                return
+            try:
+                res = STRATEGY_API.route_get(path, qs)
+            except Exception as e:
+                self._json({"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}, 500)
+                return
+            if res is None:
+                self._json({"ok": False, "msg": "not found"}, 404)
+            else:
+                self._json(res[1], res[0])
+            return
+
         if path == "/api/news":
             snap = HUB.snapshot() if HUB else {}
             ver = 0
@@ -261,6 +291,35 @@ class Handler(SimpleHTTPRequestHandler):
 
         return super().do_GET()
 
+    def do_POST(self):
+        """只给策略页用：切策略 / 存金额 / 执行计划 / 模型分析。
+
+        positions.json 是账本不是委托单 —— 只有你在这里点「确认执行」，
+        才会写入。没有任何东西会自己下单。
+        """
+        path, _, _qs = self.path.partition("?")
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length > 0 else b""
+        try:
+            params = json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            params = {}
+        if not path.startswith("/api/strategy"):
+            self._json({"ok": False, "msg": "not found"}, 404)
+            return
+        if STRATEGY_API is None:
+            self._json({"ok": False, "msg": "策略服务未启用：%s" % STRATEGY_ERR}, 503)
+            return
+        try:
+            res = STRATEGY_API.route_post(path, params)
+        except Exception as e:
+            self._json({"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}, 500)
+            return
+        if res is None:
+            self._json({"ok": False, "msg": "not found"}, 404)
+        else:
+            self._json(res[1], res[0])
+
     def log_message(self, *args):
         pass  # 静默
 
@@ -308,6 +367,14 @@ def main():
         STOCK_HUB = None
         print("[提示] 个股服务未启动：%s: %s" % (type(e).__name__, e))
 
+    # 策略页：后台把回测要用的代理序列预热一遍。
+    # 中证官网冷启动一条全历史要几十秒，放在请求里做就是白屏，所以先起线程。
+    if STRATEGY_API is not None:
+        try:
+            STRATEGY_API.warm_background()
+        except Exception as e:
+            print("[提示] 策略数据预热未启动：%s: %s" % (type(e).__name__, e))
+
     if not os.path.exists(os.path.join(BASE_DIR, "output", "index.html")):
         print("[提示] 还没生成主页，请先运行 python main.py")
 
@@ -332,6 +399,11 @@ def main():
     if STOCK_HUB is not None:
         print("  个股: http://127.0.0.1:%d/api/stock?code=600941  （3.5s/60s/300s 分档，非交易时段自动停）"
               % args.port)
+    if STRATEGY_API is not None:
+        print("  策略: http://127.0.0.1:%d/strategy   （配置对照 / 买卖计划 / 回测 / 模型分析）"
+              % args.port)
+    else:
+        print("  [提示] 策略页未启用：%s" % STRATEGY_ERR)
     if pos_server is not None:
         print("  持仓: http://127.0.0.1:%d   （与本进程同体，随窗口一起退出）" % pos_port)
     print("  关闭: 关掉启动脚本窗口 / Ctrl+C")

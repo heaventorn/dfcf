@@ -604,7 +604,10 @@ def _sidebar_html(assets_prefix="assets/"):
 </div>
 <div class="homecol" id="colR">
   <div class="win" id="wPos" style="flex:0 0 auto;">
-    <div class="wh"><span class="wt">⭐ 我的持仓</span><span class="ws" id="posAsOf"></span>
+    <div class="wh"><span class="wt">⭐ 我的持仓</span>
+      <a class="ws rowlink-a" id="stratLink" href="/strategy" style="color:#3b82f6;text-decoration:none"
+         title="打开策略执行台（配置对照 / 买卖计划 / 回测 / 模型分析）；Ctrl / 中键可开新标签">🎯 策略执行台</a>
+      <span class="ws" id="posAsOf"></span>
       <span class="wfold" data-w="wPos" title="收起 / 展开">－</span></div>
     <div class="wb" id="posBody"></div>
   </div>
@@ -667,6 +670,15 @@ HOME_JS = r"""
       // 走 8766 服务时用短地址 /stock；直接 file:// 双击打开时退回同级的 stock.html
       var base = (location.protocol === 'file:') ? '../stock.html' : '/stock';
       return base + '?code=' + encodeURIComponent(code);
+    }
+    // ---------- 持仓 / 自选管理页入口（同样走同一个窗口，不再弹新窗口） ----------
+    // 管理页是 8765 上的独立页面，带上 home= 让它的返回键知道该退回哪儿，
+    // tab=watch 让「添加自选 / 管理自选」直接落在自选那一栏。
+    function manageUrl(tab) {
+      var base = (HOME.positions && HOME.positions.manage_url) ||
+                 (HOME.watchlist && HOME.watchlist.manage_url) || 'http://127.0.0.1:8765';
+      return base.replace(/\/+$/, '') + '/?home=' + encodeURIComponent(location.href) +
+             (tab ? '&tab=' + encodeURIComponent(tab) : '');
     }
     function stockRowOpen(x) {
       // 后端已经判过「有没有详情页可看」（逆回购 / 场外基金不给入口）
@@ -1092,8 +1104,7 @@ HOME_JS = r"""
       if ($('posAsOf')) $('posAsOf').textContent = HOME.asof ? HOME.asof.slice(5, 16) : '';
       if (P.empty) {
         $('posBody').innerHTML = '<div class="empty">📭 ' + esc(P.note || '暂无持仓') + '</div>' +
-          '<a class="btnlink" href="' + (P.manage_url || 'http://127.0.0.1:8765') +
-          '" target="_blank">＋ 记录持仓(打开持仓管理)</a>';
+          '<a class="btnlink" href="' + manageUrl() + '">＋ 记录持仓(打开持仓管理)</a>';
         return;
       }
       var h = '<div class="brow" style="margin-top:2px"><span class="bl">市值</span><span class="bv">' +
@@ -1120,8 +1131,7 @@ HOME_JS = r"""
       if (!total) {
         $('assetsBody').innerHTML = '<div class="empty">📌 还没有自选标的' +
           (W.error ? '(采集异常：' + esc(W.error) + ')' : '') + '</div>' +
-          '<a class="btnlink" href="' + (W.manage_url || 'http://127.0.0.1:8765') +
-          '" target="_blank">＋ 添加自选(打开持仓管理)</a>';
+          '<a class="btnlink" href="' + manageUrl('watch') + '">＋ 添加自选(打开持仓管理)</a>';
         if ($('watchAsOf')) $('watchAsOf').textContent = 'ETF / 股票 / 其他';
         return;
       }
@@ -1150,8 +1160,7 @@ HOME_JS = r"""
       });
       h += '<div class="hintxt" style="margin-top:6px">共 ' + total + ' 条' +
            (W.asof ? ' · ' + esc(String(W.asof).slice(5, 16)) : '') +
-           ' · <a href="' + (W.manage_url || 'http://127.0.0.1:8765') +
-           '" target="_blank" style="color:#8fb6ff">管理自选</a></div>';
+           ' · <a href="' + manageUrl('watch') + '" style="color:#8fb6ff">管理自选</a></div>';
       $('assetsBody').innerHTML = h;
       if ($('watchAsOf')) $('watchAsOf').textContent = 'ETF ' + groups.filter(function (g) {
         return g.key === 'etf'; })[0]?.rows.length + ' · 股票 ' +
@@ -1366,6 +1375,15 @@ HOME_JS = r"""
     renderPos();
     renderWatchlist();
     renderAir();
+    // ---------- 策略执行台入口（同窗口跳转，页面左上角有返回键） ----------
+    // 真链接 + 不设 target：普通点击走同一个窗口，和上面个股页的规矩保持一致；
+    // 想开新标签就 Ctrl / 中键 / 右键「在新标签页中打开」，浏览器原生行为。
+    (function bindStrategyLink() {
+      var a = document.getElementById('stratLink');
+      if (!a) return;
+      // 走 8766 服务时用短地址 /strategy；file:// 双击打开时退回同级的 strategy.html
+      a.href = (location.protocol === 'file:') ? '../strategy.html' : '/strategy';
+    })();
     bindStockRows('posBody');     // 持仓行 → 个股页
     bindStockRows('assetsBody');  // 自选行 → 个股页
     window.__applyMapFilter = applyMapFilter;

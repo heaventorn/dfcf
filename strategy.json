@@ -1,0 +1,304 @@
+{
+  "_comment": "策略蓝图。positions.json 是「我实际买了什么」，这个文件是「我应该持有什么」。改这里不用改代码。",
+  "version": 1,
+  "account": {
+    "_comment": "capital = 家庭可投资总额（手动填，元）。填 0 就用「持仓市值 + cash_manual」反推。保险和半年生活开销不进这个数。",
+    "capital": 1000000.0,
+    "cash_manual": 0
+  },
+  "active": "Z0",
+  "rebalance": {
+    "_comment": "months = 哪几个月做再平衡；band = 单个桶偏离超过这个比例就提示「该动手了」。",
+    "months": [
+      1,
+      7
+    ],
+    "band": 0.05
+  },
+  "trade": {
+    "_comment": "最小交易单位（股）。ETF 都是 100 股一手。",
+    "lot": 100,
+    "fee_rate": 0.0002
+  },
+  "buckets": {
+    "cash": {
+      "name": "货币/逆回购",
+      "group": "无风险",
+      "instruments": [
+        "511880",
+        "511360"
+      ],
+      "note": "平时货基/短融，周末和月末切 204001 逆回购",
+      "proxy": {
+        "src": "csi",
+        "code": "H11025"
+      }
+    },
+    "bond": {
+      "name": "债券",
+      "group": "无风险",
+      "instruments": [
+        "511520",
+        "511010"
+      ],
+      "note": "政金债打底，国债做久期补充",
+      "proxy": {
+        "src": "csi",
+        "code": "H11001"
+      }
+    },
+    "divA": {
+      "name": "A股红利低波",
+      "group": "中风险",
+      "instruments": [
+        "512890"
+      ],
+      "note": "红利低波，不要换成普通中证红利",
+      "proxy": {
+        "src": "csi",
+        "code": "H20269"
+      }
+    },
+    "divHK": {
+      "name": "港股红利",
+      "group": "中风险",
+      "instruments": [
+        "513630"
+      ],
+      "premium": {
+        "warn": 0.01,
+        "block": 0.03
+      },
+      "note": "港股高股息，注意 20% 红利税",
+      "proxy": {
+        "src": "csi",
+        "code": "H20914",
+        "splice": {
+          "src": "csi",
+          "code": "H11141",
+          "add_yield": 0.0709,
+          "before": "20141114"
+        }
+      }
+    },
+    "broad": {
+      "name": "A股宽基",
+      "group": "中风险",
+      "instruments": [
+        "510300"
+      ],
+      "premium": {
+        "warn": 0.005,
+        "block": 0.015
+      },
+      "note": "风格保险，防止红利风格长期失效",
+      "proxy": {
+        "src": "csi",
+        "code": "H00300"
+      }
+    },
+    "gold": {
+      "name": "黄金",
+      "group": "避险",
+      "instruments": [
+        "518880"
+      ],
+      "premium": {
+        "warn": 0.005,
+        "block": 0.02
+      },
+      "note": "人民币计价，不加杠杆",
+      "proxy": {
+        "src": "em",
+        "code": "118.Au9999"
+      }
+    },
+    "ndx": {
+      "name": "纳斯达克100",
+      "group": "高风险",
+      "instruments": [
+        "513100"
+      ],
+      "premium": {
+        "_comment": "纳指 QDII 溢价是常态，三年中位 2.6%、极端时 14%。超过 5% 就别在场内买了，改场外联接或等回落。",
+        "warn": 0.02,
+        "block": 0.05,
+        "alt": [
+          {
+            "code": "270042",
+            "name": "广发纳斯达克100ETF联接(QDII)A",
+            "note": "场外申购按净值成交，没有场内溢价；T+2 确认，有额度限制"
+          },
+          {
+            "code": "040046",
+            "name": "华安纳斯达克100ETF联接(QDII)A",
+            "note": "同上，场外按净值成交"
+          },
+          {
+            "code": "000834",
+            "name": "大成纳斯达克100ETF联接(QDII)A",
+            "note": "同上，场外按净值成交"
+          }
+        ]
+      },
+      "note": "QDII 不对冲汇率，跌起来也会很凶",
+      "proxy": {
+        "src": "em_fx",
+        "code": "100.NDX"
+      }
+    }
+  },
+  "gate": {
+    "_comment": "趋势闸：再平衡当天看 H00300（沪深300全收益）与 200 日均线，跌破就把风险资产砍掉 cut 比例。只影响带 gate 的策略。",
+    "type": "ma",
+    "proxy": {
+      "src": "csi",
+      "code": "H00300"
+    },
+    "window": 200,
+    "cut": 0.5,
+    "risk_buckets": [
+      "divA",
+      "divHK",
+      "broad",
+      "ndx"
+    ]
+  },
+  "risk_overlay": {
+    "_comment": "分层减仓：趋势闸之外，再按空中飞人指数和 H00300 回撤压缩风险资产。只改目标权重，买卖仍由再平衡流程统一生成。",
+    "enabled": true,
+    "risk_buckets": [
+      "divA",
+      "divHK",
+      "broad",
+      "ndx"
+    ],
+    "sink": "cash",
+    "min_keep": 0.3,
+    "min_step": 0.05,
+    "cut_anytime": true,
+    "add_at_rebalance_only": true,
+    "airman": {
+      "enabled": true,
+      "levels": [
+        {
+          "score": 76,
+          "mult": 0.5,
+          "name": "爆破临界区"
+        },
+        {
+          "score": 51,
+          "mult": 0.7,
+          "name": "高危区"
+        },
+        {
+          "score": 26,
+          "mult": 0.9,
+          "name": "警戒区"
+        },
+        {
+          "score": 0,
+          "mult": 1.0,
+          "name": "安全区"
+        }
+      ]
+    },
+    "drawdown": {
+      "enabled": true,
+      "proxy": {
+        "src": "csi",
+        "code": "H00300"
+      },
+      "window": 252,
+      "levels": [
+        {
+          "dd": -0.15,
+          "mult": 0.4,
+          "name": "深度危机"
+        },
+        {
+          "dd": -0.12,
+          "mult": 0.6,
+          "name": "危机"
+        },
+        {
+          "dd": -0.08,
+          "mult": 0.8,
+          "name": "中度回撤"
+        },
+        {
+          "dd": -0.06,
+          "mult": 0.9,
+          "name": "回撤预警"
+        },
+        {
+          "dd": 0.0,
+          "mult": 1.0,
+          "name": "正常"
+        }
+      ]
+    }
+  },
+  "strategies": {
+    "A2": {
+      "name": "保守 E20",
+      "cat": "稳健",
+      "risk": 0.2,
+      "gate": true,
+      "weights": {
+        "cash": 0.4125,
+        "bond": 0.3375,
+        "divA": 0.072,
+        "divHK": 0.04,
+        "broad": 0.032,
+        "gold": 0.05,
+        "ndx": 0.056
+      }
+    },
+    "A5": {
+      "name": "进取 E35",
+      "cat": "进取",
+      "risk": 0.35,
+      "gate": true,
+      "weights": {
+        "cash": 0.33,
+        "bond": 0.27,
+        "divA": 0.126,
+        "divHK": 0.07,
+        "broad": 0.056,
+        "gold": 0.05,
+        "ndx": 0.098
+      }
+    },
+    "Z0": {
+      "name": "上轮讨论版",
+      "cat": "均衡",
+      "risk": 0.315,
+      "gate": true,
+      "weights": {
+        "cash": 0.341,
+        "bond": 0.284,
+        "divA": 0.114,
+        "divHK": 0.061,
+        "broad": 0.05,
+        "gold": 0.06,
+        "ndx": 0.09
+      }
+    }
+  },
+  "llm": {
+    "_comment": "key 优先读环境变量 DEEPSEEK_API_KEY，其次读同目录 secrets.json 的 deepseek_api_key。",
+    "enabled": true,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "models": [
+      "deepseek-flash",
+      "deepseek-v4-pro"
+    ],
+    "key_env": "DEEPSEEK_API_KEY",
+    "key_file": "secrets.json",
+    "key_field": "deepseek_api_key",
+    "timeout": 90,
+    "max_tokens": 8000
+  }
+}

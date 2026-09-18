@@ -542,6 +542,115 @@ def collect_reference(raw):
 
 # ---------------------------------------------------------------- 计算
 
+# 历史回补：只有能从公开序列还原到过去的分项才参与，回补结果标注为代理值。
+HIST_SERIES = {
+    "sp500_dd": ("SP500", "dd"),
+    "nasdaq_dd": ("NASDAQCOM", "dd"),
+    "vix": ("VIXCLS", "last"),
+    "cpi_yoy": ("CPILFESL", ("yoy", 12)),
+    "debt_gdp": ("GFDEGDQ188S", "last"),
+    "debt_yoy": ("GFDEBTN", ("yoy", 4)),
+    "fedfunds": ("FEDFUNDS", "last"),
+    "dgs10": ("DGS10", "last"),
+    "dgs2": ("DGS2", "last"),
+    "t10y2y": ("T10Y2Y", "last"),
+    "hyoas": ("BAMLH0A0HYM2", "last"),
+    "dfii10": ("DFII10", "last"),
+    "epu": ("USEPUINDXD", "last"),
+    "dxy": ("DTWEXBGS", "last"),
+    "dgs30": ("DGS30", "last"),
+}
+
+# 这几项只有当期值，无法回补；回补序列里按缺失处理，维度分自动按已有分项归一。
+HIST_UNAVAILABLE = ["oil", "usdjpy", "csi300_pe_pct", "rzrq_balance"]
+
+
+def _idx_asof(days, d):
+    """最后一个不晚于 d 的位置，找不到返回 -1。"""
+    import bisect
+    return bisect.bisect_right(days, d) - 1
+
+
+def _hist_value(rows, days, i, spec, lookback=252):
+    if i < 0:
+        return None
+    if spec == "last":
+        return rows[i][1]
+    if spec == "dd":
+        if i < 1:
+            return None
+        lo = max(0, i - lookback + 1)
+        high = max(v for _, v in rows[lo:i + 1])
+        return None if high <= 0 else (rows[i][1] / high - 1) * 100
+    if isinstance(spec, tuple) and spec[0] == "yoy":
+        j = i - int(spec[1])
+        if j < 0 or rows[j][1] <= 0:
+            return None
+        return (rows[i][1] / rows[j][1] - 1) * 100
+    return None
+
+
+def backfill_history(dates=None, out_path=None):
+    """按月末回补空中飞人总分，返回 {YYYYMMDD: score}。
+
+    只有 FRED 能追到过去的分项参与计算；原油、USD/JPY、沪深300 估值分位、
+    两市融资余额这四项没有历史序列，按缺失处理（维度分自动归一）。
+    结果用 airman_asof_proxy 标记，回测里仍应视为代理值。
+    """
+    import json
+    import os
+    import bars
+
+    if dates is None:
+        ser = bars.proxy_series({"src": "csi", "code": "H00300"}) or {}
+        dates = sorted(ser)
+    dates = [str(d) for d in dates if d]
+    if not dates:
+        return {}
+
+    loaded = {}
+    for key, (sid, spec) in HIST_SERIES.items():
+        try:
+            rows = _fred_rows(sid)
+        except Exception as e:
+            print("[提示] 飞人回补：%s(%s) 抓取失败 %s" % (key, sid, e))
+            rows = []
+        if rows:
+            loaded[key] = (rows, [d for d, _ in rows], spec)
+
+    # 取每个自然月的最后一个交易日
+    month_end = []
+    for i, d in enumerate(dates):
+        if i + 1 >= len(dates) or dates[i + 1][:6] != d[:6]:
+            month_end.append(d)
+
+    out = {}
+    for d in month_end:
+        iso = "%s-%s-%s" % (d[:4], d[4:6], d[6:8])
+        raw = {}
+        for key, (rows, days, spec) in loaded.items():
+            raw[key] = _hist_value(rows, days, _idx_asof(days, iso), spec)
+        for key in HIST_UNAVAILABLE:
+            raw[key] = None
+        res = compute_index(raw)
+        out[d] = round(float(res["total"]), 3)
+
+    if out_path is None:
+        import config
+        out_path = os.path.join(config.OUTPUT_DIR, "airman_history.json")
+    payload = {"method": "airman_asof_proxy",
+               "unavailable": HIST_UNAVAILABLE,
+               "points": out}
+    try:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        tmp = out_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, out_path)
+    except Exception as e:
+        print("[提示] 飞人回补：写盘失败 %s" % e)
+    return out
+
 def compute_index(raw):
     """按固定评分卡汇总计算指数。返回结果 dict。"""
     dim_results = []

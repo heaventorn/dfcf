@@ -23,6 +23,8 @@ pwd.key
 
 # LLM API Key
 .env
+# DeepSeek / 大模型 Key（strategy.json 的 llm.key_file 默认读这个文件名）
+secrets.json
 
 
 # 工具机 / 编辑器
@@ -43,3 +45,5 @@ assets/fonts/
 assets/geo/
 # 预览页(由 events.py 生成,不入库)
 events_live.html
+# 回测/自检临时脚本与产物(本地调试用,不入库)
+_bt_tmp/

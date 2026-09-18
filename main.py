@@ -83,7 +83,16 @@ def _collect_airman():
     try:
         import airman
         raw_a = airman.collect_all()
-        return airman.compute_index(raw_a), airman.collect_reference(raw_a)
+        res = airman.compute_index(raw_a)
+        refs = airman.collect_reference(raw_a)
+        try:
+            import risk
+            risk.save_airman(res, refs)
+            import history
+            history.record_risk(res, refs=refs, note="main.py")
+        except Exception as e:
+            print(f"[提示] 空中飞人风险快照落盘未完成（{e}），不影响主页。")
+        return res, refs
     except Exception as e:
         print(f"[提示] 空中飞人指数计算未完成（{e}），主页右下方将显示为空。")
         return None, []
@@ -278,6 +287,8 @@ def run(use_login=True, open_browser=True):
     print("  新闻:", "http://127.0.0.1:8766/api/news",
           "（每 %d 秒自动刷新）" % getattr(config, "NEWS_REFRESH_SECONDS", 300))
     print("  持仓/自选:", "http://127.0.0.1:8765", "（与主页同进程托管）")
+    print("  策略执行台:", "http://127.0.0.1:8766/strategy",
+          "（配置对照 / 买卖计划 / 回测 / 模型分析）")
     print("  个股页:", "主页里点持仓/自选任意一行即可进入（Ctrl/中键可开新标签）")
     print("  文件:", home_path or "(生成失败,详见上方提示)")
     print("=" * 60)
@@ -290,11 +301,19 @@ def main():
     parser.add_argument("--login-only", action="store_true", help="仅执行登录并保存 Cookie")
     parser.add_argument("--no-login", action="store_true", help="跳过登录，直接使用公开接口")
     parser.add_argument("--no-open", action="store_true", help="生成完成后不自动打开浏览器")
+    parser.add_argument("--airman-backfill", action="store_true",
+                        help="按月末回补空中飞人历史代理序列（供策略回测使用）")
     args = parser.parse_args()
 
     if args.login_only:
         import login
         login.ensure_login()
+        return
+
+    if args.airman_backfill:
+        import airman
+        pts = airman.backfill_history()
+        print("✓ 空中飞人历史代理序列已回补：%d 个月末点位" % len(pts))
         return
 
     run(use_login=not args.no_login, open_browser=not args.no_open)
