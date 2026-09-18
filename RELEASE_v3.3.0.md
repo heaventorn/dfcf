@@ -165,6 +165,10 @@ py -3.12 _bt_tmp/check_js.py      # 各页面 JS 语法校验
 node _bt_tmp/dom_check.js strategy.html http://127.0.0.1:8766 Z0   # 无浏览器渲染策略台
 ```
 
-**关于「推送」**：当前工作目录**不是 git 仓库**（没有 `.git`、没有远端），所以本版是
-文件层面的发布 —— 版本号体现在本文件与 `部署说明.md` 的标题上。
-要真按 git 版本发布，需要先 `git init` 并配好远端，再打 `v3.3.0` 标签。
+**关于「推送」**：本版已按 git 版本发布 —— 仓库 `https://github.com/heaventorn/dfcf`
+（私有，默认分支 `main`），提交 `7a37bbd`，并打 `v3.3.0` 标签、
+以本文件作为 Release Notes。
+
+不入库的是这些东西（`.gitignore` 已挡）：`pwd.key`（二级密码哈希）、
+`secrets.json`（DeepSeek key）、`cookies.json`（登录凭据）、`output/`（运行时产物）、
+`_bt_tmp/`（回测与自检的临时脚本）、`assets/fonts/`、`assets/geo/`。
