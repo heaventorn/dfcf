@@ -24,6 +24,19 @@ def _round_lot(shares, lot):
     return int(shares // lot) * lot
 
 
+def _why_text(drift, band):
+    """买卖行的那句「为什么」。别把没超阈值的漂移说成超了。
+
+    计划是按「差额 ≥ MIN_TRADE 就列出来」生成的，所以会出现漂移 4.5%、
+    阈值 5% 也给你补一手的情况 —— 那是顺手补齐，不是超阈值。
+    """
+    if abs(drift) >= band:
+        return "偏离目标 %.1f%%，超过阈值 %.1f%%" % (abs(drift) * 100,
+                                                    band * 100)
+    return ("偏离目标 %.1f%%，没到阈值 %.1f%%（顺手补齐；不想动就只执行标了"
+            "「买入 / 卖出」里超阈值的那几行）" % (abs(drift) * 100, band * 100))
+
+
 def next_rebalance(today=None):
     """下一个再平衡月的第一个自然日（真正的交易日由人看盘确认）。"""
     t = today or datetime.date.today()
@@ -86,7 +99,13 @@ def plan(sid=None, prices=None, with_live_price=True, min_trade=MIN_TRADE):
             continue
 
         if abs(delta) < min_trade:
-            row["why"] = "差额太小，不值得动"
+            if not (owned.get(b["key"]) or []) and not (b.get("target_w") or 0):
+                # 目标权重就是 0 的桶（R2 的纳指），写「差额太小」会让人以为
+                # 是暂时不动。说清楚：这一版根本不配它。
+                row["action"] = "不买"
+                row["why"] = "这一档目标权重是 0，本方案不配置"
+            else:
+                row["why"] = "差额太小，不值得动"
             rows.append(row)
             continue
 
@@ -109,8 +128,17 @@ def plan(sid=None, prices=None, with_live_price=True, min_trade=MIN_TRADE):
         if delta < 0:
             # 卖：只能卖手上真有的
             if not held:
-                row["why"] = "该减但没有持仓，跳过"
-                row["action"] = "跳过"
+                if b["key"] == "cash":
+                    # 现金桶的「当前金额」是总额减掉持仓市值，本来就没有
+                    # 可卖的「持仓」。现金多于目标的意思是少留点现金，
+                    # 多出来的那部分差额已经体现在下面各桶的买入计划里，
+                    # 写成「该减但没有持仓，跳过」会让人以为哪里算错了。
+                    row["why"] = ("现金高于目标：多出来的这部分不用动，"
+                                  "差额已经算进下面各桶的买入")
+                    row["action"] = "持有"
+                else:
+                    row["why"] = "该减但没有持仓，跳过"
+                    row["action"] = "跳过"
                 rows.append(row)
                 continue
             target_amt = abs(delta)
@@ -140,8 +168,7 @@ def plan(sid=None, prices=None, with_live_price=True, min_trade=MIN_TRADE):
             row["amount"] = got_amt
             row["fee"] = got_amt * fee
             row["legs"] = got
-            row["why"] = "偏离目标 %.1f%%，超过阈值 %.1f%%" % (
-                abs(b["drift"]) * 100, band * 100)
+            row["why"] = _why_text(b["drift"], band)
             if pg.get("level") in ("block", "warn"):
                 row["why"] += "。注意现在溢价 %.1f%%，溢价卖出反而占便宜" % (
                     float(pv.get("premium") or 0) * 100)
@@ -179,8 +206,7 @@ def plan(sid=None, prices=None, with_live_price=True, min_trade=MIN_TRADE):
             row["shares"] = sh
             row["amount"] = sh * px
             row["fee"] = sh * px * fee
-            row["why"] = "低于目标 %.1f%%，超过阈值 %.1f%%" % (
-                abs(b["drift"]) * 100, band * 100)
+            row["why"] = _why_text(b["drift"], band)
             buys += sh * px
         rows.append(row)
 

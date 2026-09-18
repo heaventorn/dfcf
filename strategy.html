@@ -96,8 +96,9 @@
 
   <div class="tabs">
     <button class="tab on" id="tab-plan" onclick="setTab('plan')">配置与计划</button>
-    <button class="tab" id="tab-bt" onclick="setTab('bt')">回测对照</button>
-    <button class="tab" id="tab-llm" onclick="setTab('llm')">模型分析</button>
+     <button class="tab" id="tab-bt" onclick="setTab('bt')">回测对照</button>
+    <button class="tab" id="tab-track" onclick="setTab('track')">盈亏追踪</button>
+     <button class="tab" id="tab-llm" onclick="setTab('llm')">模型分析</button>
     <button class="tab" id="tab-data" onclick="setTab('data')">数据</button>
   </div>
 
@@ -200,6 +201,56 @@
     </div>
   </div>
 
+  <!-- ============ 盈亏追踪 ============ -->
+  <div id="pane-track" style="display:none">
+    <div class="panel">
+      <h3>盈亏追踪</h3>
+      <div class="note" id="trackTop" style="margin-bottom:10px"></div>
+      <div class="cards" id="trackCards"></div>
+    </div>
+    <div class="panel">
+      <h3>每一腿</h3>
+      <table>
+        <thead><tr>
+          <th>资产桶</th><th>代码</th><th class="num">份额</th><th class="num">成本</th>
+          <th class="num">现价/净值</th><th class="num">这一腿</th><th class="num">市值</th>
+        </tr></thead>
+        <tbody id="trackLegs"></tbody>
+      </table>
+      <div class="note" id="trackNote" style="margin-top:10px"></div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>里程碑</h3>
+        <table><thead><tr>
+          <th>到哪天</th><th>日期</th><th class="num">累计</th>
+          <th class="num">年化</th><th class="num">同期回测年化</th>
+        </tr></thead>
+        <tbody id="trackMarks"></tbody></table>
+        <div class="note" style="margin-top:8px">
+          91 天 / 半年 / 一年 / 两年各记一次，到点那天会自动按当天净值重算。
+        </div>
+      </div>
+      <div class="panel">
+        <h3>打卡记录</h3>
+        <div style="max-height:300px;overflow:auto">
+          <table><tbody id="trackSnaps"></tbody></table>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="bar">
+        <button class="btn" onclick="loadTrack(true)">记一条今天</button>
+        <button class="btn" onclick="initTrack()">按当前计划建账 / 重算起点</button>
+        <span class="note">
+          打开这一页就会自动记一条当天的快照（同一天只留一条）。中途改了份额，
+          改 <code>output/track.json</code> 的 <code>legs</code> 就行，不用重算起点。
+        </span>
+      </div>
+      <div id="trackMsg" class="msg"></div>
+    </div>
+  </div>
+
   <!-- ============ 模型分析 ============ -->
   <div id="pane-llm" style="display:none">
     <div class="panel">
@@ -245,7 +296,7 @@ const pct = (v, d=1) => (v === null || v === undefined || isNaN(v)) ? "-" : (v*1
 const spct = (v, d=1) => (v === null || v === undefined || isNaN(v)) ? "-" : (v>0?"+":"") + (v*100).toFixed(d) + "%";
 const yuan = v => (v === null || v === undefined || isNaN(v)) ? "-" : Number(v).toLocaleString("zh-CN", {maximumFractionDigits:0});
 
-let LIST = null, BOARD = null, TAB = "plan";
+let LIST = null, BOARD = null, TRACK = null, TAB = "plan";
 
 async function api(path, data) {
   const opt = { method: data ? "POST" : "GET", headers: { "Content-Type": "application/json" } };
@@ -258,11 +309,12 @@ function setStatus(t) { $("status").textContent = t || ""; }
 
 function setTab(t) {
   TAB = t;
-  ["plan", "bt", "llm", "data"].forEach(k => {
+  ["plan", "bt", "track", "llm", "data"].forEach(k => {
     $("pane-" + k).style.display = (k === t) ? "" : "none";
     $("tab-" + k).className = "tab" + (k === t ? " on" : "");
   });
   if (t === "bt" && BOARD) drawChart();
+  if (t === "track") loadTrack(true);
   if (t === "llm" && BOARD) loadSnapshot();
 }
 
@@ -298,6 +350,7 @@ async function boot() {
 
   renderCache();
   await load();
+  loadTrack(true, true);   // 顺手记一条今天的快照，页面没开也算数
 }
 
 async function load() {
@@ -439,7 +492,8 @@ function renderPlan() {
   const p = BOARD.plan;
   $("applyBtn").disabled = !!p.blocked;
   if (!p.ok) { $("plan").innerHTML = "<tr><td colspan=8>计划生成失败：" + (p.msg||"") + "</td></tr>"; return; }
-  const tagname = a => a === "买入" ? "buy" : a === "卖出" ? "sell" : a === "跳过" ? "skip" : "hold";
+  const tagname = a => a === "买入" ? "buy" : a === "卖出" ? "sell"
+    : (a === "跳过" || a === "不买" || a === "暂缓买入") ? "skip" : "hold";
   let html = "";
   p.rows.forEach(r => {
     html += '<tr' + (r.action === "买入" || r.action === "卖出" ? ' class="hot"' : '') + '>' +
@@ -612,6 +666,109 @@ function drawChart() {
   g.beginPath();
   base.forEach((p, i) => { const x = X(p[0]), y = Y(p[1]); i ? g.lineTo(x,y) : g.moveTo(x,y); });
   g.stroke();
+}
+
+/* ================= 盈亏追踪 ================= */
+async function loadTrack(record, silent) {
+  if (record && !silent) setStatus("记录追踪快照…");
+  const r = await api("/api/strategy/track" + (record ? "?record=1" : ""));
+  if (!silent) setStatus("");
+  if (!r || !r.ok) {
+    if (!silent) {
+      $("trackTop").textContent = "";
+      $("trackCards").innerHTML = "";
+      $("trackLegs").innerHTML = "";
+      $("trackMarks").innerHTML = "";
+      $("trackSnaps").innerHTML = "";
+      $("trackMsg").className = "msg err";
+      $("trackMsg").textContent = (r && r.msg) ||
+        "还没有建账 —— 点下面「按当前计划建账 / 重算起点」。";
+    }
+    return r;
+  }
+  TRACK = r;
+  if (!silent) renderTrack();
+  return r;
+}
+
+function renderTrack() {
+  const r = TRACK;
+  if (!r || !r.ok) return;
+  const diff = (r.cum !== null && r.bench_cum !== null) ? r.cum - r.bench_cum : null;
+  const cards = [
+    { k: "总市值", v: "¥" + yuan(r.value), n: "本金 ¥" + yuan(r.capital) },
+    { k: "累计", v: spct(r.cum), n: r.days + " 天", cls: r.cum >= 0 ? "tag off" : "tag on" },
+    { k: "年化", v: spct(r.ann),
+      n: r.days < 30 ? "不满 30 天，先不折算" : "按 " + r.days + " 天折算" },
+    { k: "同期回测", v: spct(r.bench_cum),
+      n: "同一策略扣 0.45%/年" + (r.bench_day ? " · 到 " + r.bench_day : "") },
+    { k: "差", v: spct(diff), n: "实际 − 回测（跟踪误差）" },
+    { k: "口径", v: r.basis === "actual" ? "实盘账本" : "纸上建仓",
+      n: r.basis === "actual" ? "按 positions.json 的份额和成本"
+                              : "还没真买，按计划份额记账" },
+  ];
+  $("trackCards").innerHTML = cards.map(c =>
+    '<div class="card"><div class="k">' + c.k + '</div><div class="v">' +
+    (c.cls ? '<span class="' + c.cls + '">' + c.v + '</span>' : c.v) +
+    '</div><div class="n">' + (c.n || "") + '</div></div>').join("");
+
+  $("trackTop").innerHTML = "策略 <b>" + r.strategy + "</b> · 起点 " + r.start +
+    " · 已过 " + r.days + " 天 · " +
+    (r.basis === "actual" ? "实盘口径" : "纸上建仓") +
+    (r.value_note ? "<br>" + r.value_note : "");
+
+  $("trackLegs").innerHTML = r.legs.map(x =>
+    '<tr><td>' + (x.name || "") + '</td><td>' + (x.code || "") + '</td>' +
+    '<td class="num">' + (x.shares ? fmt(x.shares, 0) : "—") + '</td>' +
+    '<td class="num">' + (x.nav0 ? fmt(x.nav0, 3) : "—") + '</td>' +
+    '<td class="num">' + (x.nav ? fmt(x.nav, 3) : "—") + '</td>' +
+    '<td class="num" style="color:' + (x.ret >= 0 ? "#12a15d" : "#e64545") + '">' +
+      spct(x.ret, 2) + '</td>' +
+    '<td class="num">¥' + yuan(x.value) + '</td></tr>').join("");
+
+  $("trackNote").innerHTML = "净值口径：ETF 用东财<b>复权净值</b>（含分红再投），" +
+    "现金按 511360 短融计息。" +
+    (r.basis === "actual"
+      ? "实盘那几行按现价 × 份额，分红现金要自己加回来。"
+      : "这就是「不动手、让它自己跑」的基准线；真买之后改成实盘口径，数字会更真。");
+
+  $("trackMarks").innerHTML = (r.milestones || []).map(m => m.elapsed
+    ? '<tr><td>' + m.days + ' 天</td><td>' + m.date + '</td>' +
+      '<td class="num">' + spct(m.cum) + '</td>' +
+      '<td class="num">' + spct(m.ann) + '</td>' +
+      '<td class="num" style="color:#8a94a3">' + spct(m.bench_ann) + '</td></tr>'
+    : '<tr><td>' + m.days + ' 天</td><td class="note">' + m.date +
+      '（还有 ' + m.left + ' 天）</td><td class="num">—</td>' +
+      '<td class="num">—</td><td class="num">—</td></tr>').join("");
+
+  const ss = (r.snapshots || []).slice().reverse();
+  $("trackSnaps").innerHTML = ss.length ? ss.map(s =>
+    '<tr><td class="note">' + s.date + '</td>' +
+    '<td class="num">¥' + yuan(s.value) + '</td>' +
+    '<td class="num" style="color:' + (s.cum >= 0 ? "#12a15d" : "#e64545") + '">' +
+      spct(s.cum) + '</td>' +
+    '<td class="num">' + spct(s.ann) + '</td></tr>').join("")
+    : '<tr><td class="note">还没打卡。切到这一页就会自动记一条。</td></tr>';
+
+  $("trackMsg").className = "msg";
+  $("trackMsg").textContent = "";
+}
+
+async function initTrack() {
+  const has = !!(TRACK && TRACK.ok && TRACK.snapshot_count);
+  const ask = has
+    ? "重算 = 把起点改成今天，按当前买卖计划重新记份额。\n旧的账会存成 output/track.bak.json，不会直接丢。\n确定？"
+    : "按当前买卖计划和可投资总额建账，起点就是今天。确定？";
+  if (!confirm(ask)) return;
+  setStatus("建账中…");
+  const r = await api("/api/strategy/track/init", { id: $("sid").value, force: has ? 1 : 0 });
+  setStatus("");
+  $("trackMsg").className = "msg " + (r.ok ? "ok" : "err");
+  $("trackMsg").textContent = r.ok
+    ? ("已建账：" + r.start + " · " + r.legs + " 条腿 · 投入 ¥" + yuan(r.spent) +
+       " · 现金 ¥" + yuan(r.cash))
+    : (r.msg || "建账失败");
+  if (r.ok) await loadTrack(false);
 }
 
 /* ================= 模型分析 ================= */

@@ -157,6 +157,16 @@ def route_get(path, qs):
         except Exception as e:
             return 500, {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
 
+    if path == "/api/strategy/track":
+        # 盈亏追踪：纸上建仓的净值 / 累计 / 年化 + 同期回测对照。
+        # record=1 顺手记一条当天快照（同一天只留一条，重复调用无害）。
+        try:
+            import tracker
+            rec = _first(q, "record") in ("1", "true", "yes")
+            return 200, tracker.report(record=rec, json_out=True)
+        except Exception as e:
+            return 500, {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
+
     if path == "/api/strategy/warm":
         return 200, {"ok": True, "warm": dict(warm_background())}
 
@@ -205,6 +215,19 @@ def route_post(path, params):
         else:
             res["msg"] = "已写入账本 %d 笔" % res["applied"]
         return 200, res
+
+    if path == "/api/strategy/track/init":
+        # 按当前买卖计划（重新）建账。已有的账会先存成 track.bak.json。
+        try:
+            import tracker
+            res = tracker.init(capital=params.get("capital") or None,
+                               sid=params.get("id") or None,
+                               force=bool(params.get("force")))
+            if res.get("ok"):
+                res["report"].pop("legs", None)   # 报告太大，页面自己再拉一次
+            return (200 if res.get("ok") else 400), res
+        except Exception as e:
+            return 500, {"ok": False, "msg": "%s: %s" % (type(e).__name__, e)}
 
     if path == "/api/strategy/llm":
         try:

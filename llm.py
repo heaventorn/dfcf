@@ -64,6 +64,40 @@ def available():
 
 # ------------------------------------------------------------------ 快照
 
+def _track_view(sid):
+    """有盈亏追踪账本就带上「实际 vs 同期回测」，没有就返回 None。
+
+    只读 output/track.json，不写快照（record=False）—— 打开模型分析这一个动作
+    不该让账本多一条记录。
+    """
+    try:
+        import tracker
+        t = tracker._load(tracker.FILE, None)
+        if not t or t.get("strategy") != sid:
+            return None
+        r = tracker.report(record=False, json_out=True)
+        if not r.get("ok"):
+            return None
+
+        def p(x):
+            return None if x is None else round(x * 100, 2)
+
+        return {
+            "起点": r["start"], "已过天数": r["days"],
+            "口径": "实盘账本" if r["basis"] == "actual" else "纸上建仓（还没真买）",
+            "累计收益%": p(r["cum"]), "年化%": p(r["ann"]),
+            "同期回测累计%": p(r["bench_cum"]),
+            "同期回测年化%": p(r["bench_ann"]),
+            "差（累计）%": (None if r["bench_cum"] is None
+                            else p(r["cum"] - r["bench_cum"])),
+            "注": "回测是「历史上这么做会怎样」，这里是「从起点起真的这样」。"
+                  "不满 30 天不折算年化。差距主要来自 ETF 实际净值与跟踪误差、"
+                  "再平衡时点、分红税、以及回测按指数代理算的口径。",
+        }
+    except Exception:
+        return None
+
+
 def snapshot(sid=None, drag=0.0):
     """喂给模型的事实。只放数字和已确认的事实，不放我的猜测。"""
     import backtest
@@ -163,6 +197,7 @@ def snapshot(sid=None, drag=0.0):
         "未分类持仓": [{"代码": p["code"], "名称": p["name"],
                         "市值": round(p["value"], 2)}
                        for p in mon["unclassified"]],
+        "实盘跟踪": _track_view(sid),
         "历史回测": hist,
     }
 
