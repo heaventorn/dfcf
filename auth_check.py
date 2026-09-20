@@ -23,13 +23,20 @@ else:
 
 
 def _load_key():
-    """读取本地 pwd.key 中的强密码明文（该文件不上传仓库）"""
+    """读取本地 pwd.key 中的强密码明文（该文件不入库，统一放 data/）"""
     base = os.path.dirname(os.path.abspath(__file__))
     try:
-        with open(os.path.join(base, "pwd.key"), "r", encoding="utf-8") as f:
-            return f.read().strip()
+        import config
+        cands = [config.PWD_KEY_FILE, os.path.join(base, "pwd.key")]
     except Exception:
-        return ""
+        cands = [os.path.join(base, "pwd.key")]
+    for p in cands:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            continue
+    return ""
 
 
 def _verify(pwd):
@@ -52,7 +59,7 @@ def main():
 
     key = _load_key()
     if not key:
-        print("错误：找不到本地密钥文件 pwd.key，程序拒绝启动。")
+        print("错误：找不到本地密钥文件 data/pwd.key，程序拒绝启动。")
         return 1
 
     root = tk.Tk()

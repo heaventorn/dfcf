@@ -197,7 +197,7 @@ def _open_app_window(url):
         return False
     try:
         import subprocess
-        profile = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".edge_profile")
+        profile = config.EDGE_PROFILE_DIR
         subprocess.Popen([
             exe,
             "--app=" + url,

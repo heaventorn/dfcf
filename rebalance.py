@@ -277,7 +277,7 @@ def plan(sid=None, prices=None, with_live_price=True, min_trade=MIN_TRADE):
 # ------------------------------------------------------------------ 落地
 
 def _positions_file():
-    return os.path.join(config.BASE_DIR, "positions.json")
+    return config.POS_FILE
 
 
 def _log_file():

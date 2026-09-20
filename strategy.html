@@ -142,7 +142,7 @@
       <div class="panel">
         <h3>未分类持仓</h3>
         <div class="note">这些还挂在账本上但没归到任何资产桶，不参与配置计算。
-          要归类就在持仓页改，或在 <code>positions.json</code> 里加 <code>"bucket"</code> 字段。</div>
+          要归类就在持仓页改，或在 <code>data/positions.json</code> 里加 <code>"bucket"</code> 字段。</div>
         <table><tbody id="unclassified"></tbody></table>
       </div>
       <div class="panel">
@@ -546,7 +546,7 @@ async function boot() {
   $("llmState").innerHTML = la.has_key
     ? "✅ 已配置 Key（" + la.key_source + "）· 模型 " + la.model
     : "⚠️ 还没配 API Key：" + (la.key_source || "") +
-      "<br>在项目目录建 secrets.json，内容 {\"deepseek_api_key\": \"sk-...\"}，" +
+      "<br>建 data/secrets.json，内容 {\"deepseek_api_key\": \"sk-...\"}，" +
       "或设环境变量 DEEPSEEK_API_KEY，然后重开服务。";
   const ms = $("llmModel");
   ms.innerHTML = "";

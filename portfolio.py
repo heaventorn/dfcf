@@ -28,7 +28,7 @@ from config import BASE_DIR
 from utils import to_float as _to_float
 
 
-POS_FILE = os.path.join(BASE_DIR, "positions.json")
+POS_FILE = config.POS_FILE
 
 
 def load_positions():
@@ -44,7 +44,7 @@ def load_positions():
 #
 # 与「持仓」的区别：自选只跟行情，不记成本/数量、不算盈亏（要算盈亏的放 positions.json）。
 # 分三组：etf（场内 ETF）/ stock（股票）/ other（场外基金、国债逆回购等非 ETF/股票品种）。
-WATCH_FILE = os.path.join(BASE_DIR, "watchlist.json")
+WATCH_FILE = config.WATCH_FILE
 WATCH_GROUPS = ("etf", "stock", "other")
 
 # watchlist.json 不存在时的种子自选：把原先写死的「配置标的行情」按新分组搬进来，

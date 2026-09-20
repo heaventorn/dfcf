@@ -26,8 +26,13 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-POS_FILE = os.path.join(BASE_DIR, "positions.json")
-WATCH_FILE = os.path.join(BASE_DIR, "watchlist.json")
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+import config  # noqa: E402  数据文件统一在 data/，路径常量集中在 config.py
+
+POS_FILE = config.POS_FILE
+WATCH_FILE = config.WATCH_FILE
 PORT = 8765
 
 

@@ -171,6 +171,31 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=BASE_DIR, **kwargs)
 
+    # data/ 里的东西不对外提供：pwd.key、secrets.json、cookies.json 和持仓账本都在那。
+    # 静态服务的根是项目目录，所以必须显式挡住，否则浏览器敲 /data/pwd.key 就能拿到。
+    _BLOCKED_PREFIX = ("/data/", "/.edge_profile/", "/.git/")
+    _BLOCKED_EXACT = ("/data", "/.edge_profile", "/.git", "/pwd.key", "/secrets.json",
+                      "/cookies.json", "/positions.json", "/watchlist.json", "/strategy.json")
+
+    def _sensitive(self, path):
+        p = path.lower()
+        if p.startswith(self._BLOCKED_PREFIX):
+            return True
+        return p.rstrip("/") in self._BLOCKED_EXACT
+
+    def _deny_sensitive(self, path):
+        """命中敏感路径就回 403；返回 True 表示已经处理完，调用方直接 return。"""
+        if not self._sensitive(path):
+            return False
+        body = "403 local data is not served".encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        return True
+
     def end_headers(self):
         # 大贴图允许缓存，页面本身与 API 不缓存（便于立刻看到新数据）
         if self.path.lower().split("?")[0].endswith(STATIC_EXT):
@@ -191,6 +216,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path, _, qs = self.path.partition("?")
+
+        if self._deny_sensitive(path):
+            return
 
         # ---- 策略页：/strategy ----
         if path in ("/strategy", "/strategy/"):

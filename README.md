@@ -16,7 +16,7 @@
 - **主页（3D 地球指挥台）**：中间 3D 地球（宏观事件光点 / 国界 / 洲际导航）+ 左侧「大A行情概况 + 白底可缩放行情图 / 新闻·日历」+ 右侧「我的持仓 + 我的自选 / 空中飞人指数」，生成**单文件自包含 HTML**（`output/index.html`，离线可开）
 - **实时新闻推送**（`live_server.py`）：脚本启动后自动在后台拉起，**每 5 分钟**重抓一次全球新闻（东财 7x24 / 华尔街见闻 / 财联社 / 金十 / 同花顺 / 新浪 7x24）；主页按版本号轮询 `/api/news`，有新内容就**增量刷新地球光点与新闻栏**（不整页重载、不重新下载贴图）；关掉启动脚本窗口时服务随之退出
 - **新闻可跳原文**：新闻栏与详情面板里的标题都是链接（新窗口打开原站），六个信源在抓取时都保留了原文地址；点条目的**其余位置**仍是原有的「飞向地球光点 + 展开详情」，互不干扰
-- **我的自选**（主页右上方窗口）：自己维护的标的清单，分 **ETF / 股票 / 其他** 三组（存 `watchlist.json`）。**只跟行情——不记成本、不算盈亏**（那是「我的持仓」的事）。在持仓管理页 `http://127.0.0.1:8765` 的「📌 自选管理」标签填个代码就能加入；场内 ETF/股票取实时价，场外基金取净值（带净值日），国债逆回购显示的是年化利率
+- **我的自选**（主页右上方窗口）：自己维护的标的清单，分 **ETF / 股票 / 其他** 三组（存 `data/watchlist.json`）。**只跟行情——不记成本、不算盈亏**（那是「我的持仓」的事）。在持仓管理页 `http://127.0.0.1:8765` 的「📌 自选管理」标签填个代码就能加入；场内 ETF/股票取实时价，场外基金取净值（带净值日），国债逆回购显示的是年化利率
 - **个股终端**（`stock.py` + `stock.html`）：主页里点持仓/自选任意一行 → **同一个窗口**进入个股页（详细报价 / 五档盘口 / 分时含均价 / 日K / 月K / 均线·BOLL 指标切换 / 量能 / MACD），返回键或 Esc 回主页。后台按 **3.5s / 60s / 300s** 分档刷新，**同一只票合并请求**（多开标签页也只打一次上游），**收盘、午休、周末自动停刷**，页面关掉 60 秒后连后台也不再为它抓数
 
 ## 环境要求
@@ -62,7 +62,7 @@ python history.py --days 30 --field breadth_up   # 某指标时间序列
 ```
 
 首次运行 `python main.py` 会弹出浏览器窗口，用「东方财富 App」扫一扫登录页面左侧二维码即可。
-登录成功后 Cookie 保存到 `cookies.json`，下次运行自动复用，无需重复扫码。
+登录成功后 Cookie 保存到 `data/cookies.json`，下次运行自动复用，无需重复扫码。
 
 ### 手动粘贴 Cookie（备用登录方式）
 
@@ -73,6 +73,22 @@ python -c "import login; login.manual_login()"
 ```
 
 从已登录东财的浏览器按 F12 → Network，复制任意请求头里的 Cookie 字符串粘贴即可。
+
+## 数据目录：`data/` 与 `output/`
+
+两类东西分开放，**整条界线就是「丢了能不能重算」**：
+
+| 目录 | 放什么 | 入库吗 | 丢了怎么办 |
+| --- | --- | --- | --- |
+| `data/` | **你手动维护的数据 + 凭据**：`positions.json`（持仓）、`watchlist.json`（自选）、`strategy.json`（策略蓝图）、`cookies.json`、`pwd.key`、`secrets.json` | **不入库**（`.gitignore` 排除整个目录） | 找不回来，必须自己留着 |
+| `output/` | 程序生成的缓存与报告：主页、历史库、各类行情缓存、追踪账本 | 不入库 | 删掉重跑即可 |
+
+- 路径常量集中在 `config.py`（`POS_FILE` / `WATCH_FILE` / `STRATEGY_FILE` / `COOKIE_FILE` / `PWD_KEY_FILE` / `SECRETS_FILE`），
+  别在别的模块里拼路径。
+- **首次运行会自动做两件事**：① 项目根目录若有旧版留下的同名文件，搬进 `data/`；② `data/` 里缺
+  `positions.json` / `watchlist.json` / `strategy.json` 时，按 `data_templates/*.example.json` 生成。
+  所以新机器克隆下来直接 `python main.py` 就能跑，不用手工建文件。
+- `data/` 里的文件**不会**通过主页的本地服务暴露出去（`live_server.py` 对 `/data/` 一律回 403）。
 
 ## 输出
 
@@ -115,15 +131,14 @@ dfcf-main/
 ├── home.py                  # 主页数据聚合与页面生成
 ├── events.py                # 全球宏观事件采集 + 地球页资源
 ├── geo.py / feeds.py        # 地名归因 / 快讯源
-├── portfolio.py             # 持仓 / 自选行情采集（positions.json / watchlist.json）
+├── portfolio.py             # 持仓 / 自选行情采集（data/positions.json / data/watchlist.json）
 ├── kchart.py                # K线（日/周/月，前复权）与分时取数 + MA/BOLL/MACD 指标
 ├── stock.py                 # 个股终端数据层 + StockHub 后台分档刷新（含离线自检 CLI）
 ├── stock.html               # 个股终端页面（分时 / 日K / 月K + 指标切换 + 五档盘口）
 ├── live_server.py           # 常驻服务（127.0.0.1:8766：主页静态发布 + /api/news + /api/stock + /stock 个股页）
 ├── position_manager.py      # 持仓 / 自选管理本地服务（127.0.0.1:8765）
-├── positions.json           # 我的持仓（代码 / 成本 / 数量；用来算市值与盈亏）
-├── watchlist.json           # 我的自选（只跟行情、不记成本；ETF / 股票 / 其他 三组）
-├── strategy.json            # 策略蓝图（资产桶 / 目标权重 / 再平衡 / 趋势闸 / LLM 配置）
+├── data/                    # 【本地数据，整目录不入库】持仓 / 自选 / 策略蓝图 / cookies / pwd.key / secrets.json
+├── data_templates/          # data/ 的种子模板（*.example.json），新机器克隆后自动生成 data/
 ├── strategy.html            # 策略执行台页面（配置对照 / 买卖计划 / 回测 / 模型分析）
 ├── strategy.py              # 策略层（目标权重 / 趋势闸 / 实际持仓对照）
 ├── strategy_api.py          # 策略页 HTTP 接口（挂在 live_server 上，不认识的路由交回原处理器）
@@ -132,7 +147,7 @@ dfcf-main/
 ├── tracker.py               # 盈亏追踪器：把建仓那天记成起点，之后按复权净值算实际年化
 ├── bars.py                  # 日线数据层（中证 / 东财 / 腾讯 + 汇率合成 + 本地缓存）
 ├── llm.py                   # DeepSeek 分析（Key 读环境变量或 secrets.json）
-├── config.py                # 配置（指数、板块、多源冷却、网络重试、Cookie 路径等）
+├── config.py                # 配置（指数、板块、多源冷却、网络重试、数据目录路径常量）
 ├── utils.py                 # 公共工具（格式化 / 类型转换 / 市场情绪判断）
 ├── requirements.txt         # 依赖清单
 ├── test_sources.py          # 多源适配层冒烟测试（联网；python test_sources.py）
@@ -282,7 +297,7 @@ Key 二选一：
 ```powershell
 # 方式一：环境变量
 $env:DEEPSEEK_API_KEY = "sk-..."
-# 方式二：项目目录建 secrets.json（已被 .gitignore 覆盖）
+# 方式二：建 data/secrets.json（data/ 整目录不入库）
 # {"deepseek_api_key": "sk-..."}
 ```
 
@@ -365,7 +380,7 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 
 - **部分数据为空 / 接口超时**：程序已内置多源自动切换——东财 push2 被限流时自动改用
   push2delay 延迟镜像 / 腾讯 / 新浪；若多个数据源均异常才可能为空，稍等 15~30 分钟重跑即可。
-- **登录后 Cookie 失效**：Cookie 有时效，失效时删除 `cookies.json` 后重新执行 `python main.py` 即可重新扫码。
+- **登录后 Cookie 失效**：Cookie 有时效，失效时删除 `data/cookies.json` 后重新执行 `python main.py` 即可重新扫码。
 - **浏览器未弹出**：确认已执行 `python -m playwright install chromium`（建议用国内镜像）。
 - **新闻没在动 / 看不到自动刷新**：确认 8766 端口上跑的是 `live_server.py`。
   浏览器访问 http://127.0.0.1:8766/api/health 应返回 JSON；

@@ -34,7 +34,7 @@ def key_status():
     if k and k.strip():
         return k.strip(), "环境变量 %s" % env
     f = cfg.get("key_file") or "secrets.json"
-    path = f if os.path.isabs(f) else os.path.join(config.BASE_DIR, f)
+    path = f if os.path.isabs(f) else os.path.join(config.DATA_DIR, f)
     field = cfg.get("key_field") or "deepseek_api_key"
     try:
         with open(path, encoding="utf-8") as fh:

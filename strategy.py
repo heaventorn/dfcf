@@ -20,7 +20,7 @@ import bars
 import config
 import risk
 
-FILE = os.path.join(config.BASE_DIR, "strategy.json")
+FILE = config.STRATEGY_FILE
 
 _lock = threading.Lock()
 _cfg = None
@@ -313,7 +313,7 @@ def risk_state(gw=None):
 # ------------------------------------------------------------------ 账本
 
 def _positions_file():
-    return os.path.join(config.BASE_DIR, "positions.json")
+    return config.POS_FILE
 
 
 def load_positions():

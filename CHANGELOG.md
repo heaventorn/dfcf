@@ -7,6 +7,56 @@
 ---
 
 
+## v3.5.0 · 数据目录收敛（`data/` 一个目录装完，凭据和持仓彻底离开仓库）
+
+这一版不添功能，修的是一个会真出事的结构问题。
+
+**毛病**：持仓账本 `positions.json`、自选 `watchlist.json`、策略蓝图 `strategy.json`
+都躺在仓库根目录，而且**被 git 跟踪着**。它们又都是程序运行时会写进去的文件 ——
+你在页面上点一次「确认执行」，真实持仓就落进了这个文件。
+于是只要有人跑一次 `git add -A`，你的持仓明细、家庭可投资总额就上了公开仓库。
+（`cookies.json` / `pwd.key` / `secrets.json` 有 `.gitignore` 兜着，这三个没有。）
+
+**改法**：
+
+- 新增 `data/` 目录，装所有**你手动维护的数据 + 凭据**：持仓 / 自选 / 策略蓝图 /
+  `cookies.json` / `pwd.key` / `secrets.json`。**整目录不入库**
+- 路径常量全部收到 `config.py` 一处（`DATA_DIR` / `POS_FILE` / `WATCH_FILE` /
+  `STRATEGY_FILE` / `COOKIE_FILE` / `PWD_KEY_FILE` / `SECRETS_FILE`），
+  别的模块不再自己拼路径
+- 新增 `data_templates/*.example.json` 种子模板，**首次运行自动生成 `data/`**，
+  克隆下来直接 `python main.py` 就能跑，不用手工建文件
+- 主页那个本地服务**对 `/data/` 一律回 403** —— 静态服务的根是项目目录，
+  不挡住的话浏览器敲 `/data/pwd.key` 就能拿到密钥
+- `.gitignore` 补上根目录锚定规则：`/positions.json`、`/watchlist.json`、`/strategy.json`
+  万一还留在根目录，也一样进不去仓库
+
+**迁移**：不用手工做。第一次跑新版本时，根目录的同名旧文件会自动搬进 `data/`；
+如果搬完之后旧进程又往根目录写过（没重启的情况），以**修改时间更新的那一份**为准，
+另一份留成 `.bak`。
+
+**注意**：`data/` 不入库，所以仓库里不再有现成的 `strategy.json`。
+克隆后的第一份蓝图由模板生成，`account.capital` 默认是 **0**，得自己填。
+
+---
+
+
+## v3.4.1 · 仓库整理（RELEASE 合并成 CHANGELOG，`_scen/` 清出仓库）
+
+纯清理，不动功能。
+
+- 7 个 `RELEASE_v3.*.md` 合并成单一 `CHANGELOG.md`（就是本文件），按版本倒序，一条没丢
+- 移除 `_scen/`：29 个研究期脚本。`部署说明.md` 里本就写着这个目录「不入库」，
+  但 `.gitignore` 当时写的是「只入库 .py」，两处打架，git 按后者执行 —— 于是脚本一直跟着走
+- `.gitignore` 从 `_scen/*.json` 这类逐类排除，改成忽略整个 `_scen/`
+- 仓库条目 94 → 58
+
+> 顺带记一条容易踩的 git 规则：`.gitignore` 对**已经被跟踪**的文件无效。
+> 一个文件一旦进过版本库，光改 ignore 规则它不会自己消失，必须显式删除。
+
+---
+
+
 ## v3.4.0 · 记账与体检（现金流台账 / 事件日志 / 四档体检 / 买卖评级 / 三策略建仓说明书）
 
 v3.3.0 做的是**手**：把 `strategy.json`（该持有什么）和 `positions.json`（实际持有什么）

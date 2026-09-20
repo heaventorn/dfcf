@@ -2,12 +2,99 @@
 """东方财富爬虫 - 配置项"""
 
 import os
+import shutil
 
 # 项目根目录
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# ------------------------------------------------------------------ 数据目录
+# 分工（方案 B：本地数据统一收进一个目录，整目录不入库）：
+#   data/   你手动维护的数据 + 凭据（持仓 / 自选 / 策略蓝图 / cookies / pwd.key / secrets.json）
+#   output/ 程序生成、删掉能重算的缓存与报告
+# 为什么分开：data/ 是「丢了就没了」的东西，必须挡住误上传；output/ 是产物，丢了重跑即可。
+#
+# 迁移与播种（进程启动时自动做一次，幂等）：
+#   1) 项目根目录若还留有同名旧文件（positions.json / strategy.json / ...），搬进 data/
+#   2) data/ 里缺 positions.json / watchlist.json / strategy.json 时，用 data_templates/ 里的
+#      *.example.json 播种 —— 全新克隆下来也能直接跑，不用手工建文件
+DATA_DIR = os.path.join(BASE_DIR, "data")
+TEMPLATE_DIR = os.path.join(BASE_DIR, "data_templates")
+
+_MOVE_NAMES = ("cookies.json", "pwd.key", "secrets.json", "positions.json",
+               "watchlist.json", "strategy.json")
+_SEED_NAMES = ("positions.json", "watchlist.json", "strategy.json")
+
+_data_ready = False
+
+
+def ensure_data_dir():
+    """建好 data/，把根目录旧文件搬进来，缺的文件用模板播种。可重复调用。"""
+    global _data_ready
+    if _data_ready:
+        return DATA_DIR
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except OSError:
+        return DATA_DIR
+    for name in _MOVE_NAMES:
+        src = os.path.join(BASE_DIR, name)
+        dst = os.path.join(DATA_DIR, name)
+        if not os.path.exists(src):
+            continue
+        if os.path.exists(dst):
+            # 两边都有：根目录那份更新，说明是「迁移之后、旧进程还没重启时写下的」，
+            # 以它为准，data/ 里那份先留成 .bak，免得两头不一致把最新一笔吃掉。
+            if not _newer(src, dst):
+                continue
+            try:
+                shutil.move(dst, dst + ".bak")
+            except Exception:
+                pass
+        try:
+            os.replace(src, dst)
+        except OSError:
+            try:
+                shutil.move(src, dst)
+            except Exception:
+                pass
+    for name in _SEED_NAMES:
+        dst = os.path.join(DATA_DIR, name)
+        tpl = os.path.join(TEMPLATE_DIR, name.replace(".json", ".example.json"))
+        if not os.path.exists(dst) and os.path.exists(tpl):
+            try:
+                shutil.copyfile(tpl, dst)
+            except Exception:
+                pass
+    _data_ready = True
+    return DATA_DIR
+
+
+def _newer(a, b):
+    """a 的修改时间是否比 b 新（取不到就当不比它新）。"""
+    try:
+        return os.path.getmtime(a) > os.path.getmtime(b)
+    except OSError:
+        return False
+
+
+ensure_data_dir()
+
 # Cookie 持久化文件
-COOKIE_FILE = os.path.join(BASE_DIR, "cookies.json")
+COOKIE_FILE = os.path.join(DATA_DIR, "cookies.json")
+# 本机强密码文件（含二级密码明文，绝不入库）
+PWD_KEY_FILE = os.path.join(DATA_DIR, "pwd.key")
+# DeepSeek / 大模型 Key
+SECRETS_FILE = os.path.join(DATA_DIR, "secrets.json")
+# 账本：我实际持有什么
+POS_FILE = os.path.join(DATA_DIR, "positions.json")
+# 自选：只跟行情、不记成本
+WATCH_FILE = os.path.join(DATA_DIR, "watchlist.json")
+# 策略蓝图：目标权重 / 再平衡 / 趋势闸
+STRATEGY_FILE = os.path.join(DATA_DIR, "strategy.json")
+# Edge --app 独立窗口的专用 profile（main.py 用）。
+# 留在项目根目录：浏览器进程长时间持有它，活着的 profile 不适合搬家，
+# 而且它是缓存不是数据。.gitignore 已排除。
+EDGE_PROFILE_DIR = os.path.join(BASE_DIR, ".edge_profile")
 
 # 输出目录
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")

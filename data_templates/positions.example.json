@@ -1,0 +1,4 @@
+{
+  "_comment": "我的持仓账本。code/tx 是标的，cost 是成本价，shares 是份额，bucket 对应 strategy.json 里的资产桶；paper=true 表示实验仓。",
+  "positions": []
+}

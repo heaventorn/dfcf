@@ -47,5 +47,13 @@ assets/geo/
 events_live.html
 # 回测/自检临时脚本与产物(本地调试用,不入库)
 _bt_tmp/
-# 研究期一次性脚本目录(自检 / 压测 / 季节性 / 追踪器自检)，仅本地保留，不入库
+# 研究期脚本目录(自检 / 压测 / 季节性 / 追踪器自检)：整个目录不入库
 _scen/
+# ===== 本地数据目录 =====
+# 持仓 / 自选 / 策略蓝图 / cookies / pwd.key / secrets.json 全在 data/ 里，整目录不入库。
+# 路径常量集中在 config.py；新机器克隆下来后，data/ 会按 data_templates/ 自动生成。
+/data/
+# 兼容旧布局：这几个文件若还留在仓库根目录，同样不许入库（锚定根目录，别误伤别的目录）
+/positions.json
+/watchlist.json
+/strategy.json
