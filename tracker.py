@@ -167,7 +167,7 @@ def init(capital=None, sid=None, force=False):
     if not plan.get("ok"):
         return {"ok": False, "msg": "计划没算出来：%s" % plan.get("msg")}
     start = _today()
-    legs, spent = [], 0.0
+    legs, spent, fees = [], 0.0, 0.0
     for r in plan["rows"]:
         if r.get("action") != "买入" or not r.get("amount"):
             continue
@@ -180,10 +180,13 @@ def init(capital=None, sid=None, force=False):
         legs.append({"bucket": r.get("key"), "code": code, "name": r.get("name"),
                      "shares": shares, "nav0": n0, "amount": round(amt, 2)})
         spent += amt
+        fees += float(r.get("fee") or 0.0)
     if not legs:
         return {"ok": False, "msg": "今天的计划一笔都不用买，没什么可建的"}
     veh_nav = nav_at(CASH_VEHICLE, start)
-    cash = {"amount": round(cap - spent, 2), "vehicle": CASH_VEHICLE,
+    # 现金要把手续费扣掉：手续费是花出去的钱，不是还在账上的钱。不扣的话
+    # 这条线和现金流台账会差一个手续费，两个页面永远对不上。
+    cash = {"amount": round(cap - spent - fees, 2), "vehicle": CASH_VEHICLE,
             "nav0": veh_nav,
             "note": "闲钱默认按 %s 计息；就放活期的话把 vehicle 改成 null"
                     % CASH_VEHICLE}
@@ -353,6 +356,137 @@ def report(record=False, json_out=False):
     if json_out:
         return out
     return out
+
+
+# ------------------------------------------------------------------ 建仓以来
+
+def _nav_axis(code):
+    """按天升序的净值，给下面的指针扫描用：([YYYYMMDD...], [nav...])。"""
+    s = nav_series(code) or {}
+    ds = sorted(s)
+    return ds, [float(s[d]) for d in ds]
+
+
+def _mdd(points):
+    """最大回撤。points = [(day, value)]，返回 (回撤, 谷底日, 峰顶日)。"""
+    peak = peak_day = None
+    worst, worst_day, worst_peak = 0.0, None, None
+    for d, v in points:
+        if peak is None or v > peak:
+            peak, peak_day = v, d
+        if peak:
+            dd = v / peak - 1.0
+            if dd < worst:
+                worst, worst_day, worst_peak = dd, d, peak_day
+    return worst, worst_day, worst_peak
+
+
+def bucket_stats(start=None):
+    """建仓以来：每个桶的盈亏和最大回撤。
+
+    刻意**不读快照**。快照是为了「事后回看当时的判断」，一天漏跑就缺一格；
+    而各个腿的复权净值序列是现成的、完整的，把整段重算一遍既准确又不占盘。
+    所以这个数每次都是现算，没有需要做保留期的历史可清。
+
+    start 可以传一个更早的日子，用来预览「假如那时候就建了仓」——模版页面
+    就是这么出数的，金额仍用当下账本的金额。
+
+    返回
+      {"ok":True, "start":.., "asof":.., "days":n, "basis":.., "points":n,
+       "buckets":{key:{"amount0","value","pnl","ret","mdd","mdd_day",
+                       "peak_day"}},
+       "total":{"amount0","value","pnl","ret","mdd","mdd_day"}}
+    """
+    t = _load(FILE, None)
+    if not t:
+        return {"ok": False, "msg": "还没建账：先跑 py tracker.py init"}
+    start = start or t.get("start")
+    today = _today()
+
+    units = []
+    for l in (t.get("legs") or []):
+        amt = float(l.get("amount") or 0)
+        if amt <= 0:
+            continue
+        units.append({"bucket": l.get("bucket") or "?", "code": l.get("code"),
+                      "amount": amt, "nav0": float(l.get("nav0") or 0)})
+    c = t.get("cash") or {}
+    if float(c.get("amount") or 0) > 0:
+        units.append({"bucket": "cash", "code": c.get("vehicle"),
+                      "amount": float(c["amount"]),
+                      "nav0": float(c.get("nav0") or 0)})
+    if not units:
+        return {"ok": False, "msg": "账本里没有腿"}
+
+    amount0 = {}
+    for u in units:
+        amount0[u["bucket"]] = amount0.get(u["bucket"], 0.0) + u["amount"]
+
+    # 交易日：各腿净值序列落在 [start, today] 的日子取并集
+    ser = {}
+    day_set = set()
+    for u in units:
+        code = u["code"]
+        if not code or code in ser:
+            continue
+        ser[code] = _nav_axis(code)
+        day_set.update(d for d in ser[code][0] if start <= d <= today)
+    axis = [start] + sorted(d for d in day_set if d > start)
+
+    cursor = {code: 0 for code in ser}
+    # 基数用「起点那天的净值」，不是建账时抄下来的 nav0。两者在正常建账时
+    # 是同一个数；只有拿 start 往前推做预览时才会不一样，那时候要按新起点
+    # 重新定基，否则整条线永远收在原地、收益率恒为 0。
+    for u in units:
+        code = u["code"]
+        if not code or code not in ser:
+            continue
+        ds, vs = ser[code]
+        if not ds:
+            continue
+        base = nav_at(code, start)
+        if base is None:                      # 起点早于这只的净值历史
+            base = vs[0]
+        u["nav0"] = float(base)
+
+    series = {k: [(start, v)] for k, v in amount0.items()}
+    # 组合整体按**本金**算，不是按「各腿金额相加」。两者的差就是建仓手续费
+    # （各腿的 amount 是买入金额，手续费不在里面）。用本金当基数，手续费
+    # 才会老老实实体现成收益上的负拖累，而不是被悄悄抹掉。
+    capital = float(t.get("capital") or sum(amount0.values()))
+    total_series = [(start, sum(amount0.values()))]
+    for d in axis[1:]:
+        cur = dict(amount0)
+        for u in units:
+            code = u["code"]
+            if not code or not u["nav0"] or code not in ser:
+                continue
+            ds, vs = ser[code]
+            if not ds or ds[0] > d:          # 这天之前还没有净值，按原值算
+                continue
+            i = cursor[code]
+            while i + 1 < len(ds) and ds[i + 1] <= d:
+                i += 1
+            cursor[code] = i
+            cur[u["bucket"]] += u["amount"] * (vs[i] / u["nav0"] - 1.0)
+        for k in cur:
+            series[k].append((d, cur[k]))
+        total_series.append((d, sum(cur.values())))
+
+    def _pack(pts, amt0):
+        mdd, mdd_day, peak_day = _mdd(pts)
+        v = pts[-1][1]
+        return {"amount0": round(amt0, 2), "value": round(v, 2),
+                "pnl": round(v - amt0, 2),
+                "ret": (v / amt0 - 1.0) if amt0 else 0.0,
+                "mdd": mdd, "mdd_day": mdd_day, "peak_day": peak_day}
+
+    buckets = {k: _pack(pts, amount0[k]) for k, pts in series.items()}
+    return {"ok": True, "start": start, "asof": axis[-1], "today": today,
+            "days": _days(start, axis[-1]), "points": len(axis),
+            "basis": t.get("basis", "paper"), "capital": t.get("capital"),
+            "buckets": buckets,
+            "total": _pack(total_series, capital)}
 
 
 def _pct(v, digits=2):

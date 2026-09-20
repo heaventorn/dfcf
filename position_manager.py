@@ -61,6 +61,22 @@ def find_pos(data, code):
     return None, None
 
 
+def _journal(title, detail="", level="act", ref=None):
+    """在这一页手工动账本时，往事件日志留一行。
+
+    这一页是绕过策略台的：系统分不出你是在记「真成交」还是在修正录错的数字，
+    所以它只记事件，**不碰现金流台账**。钱的事（入金 / 出金 / 分红 / 手续费）
+    一律到策略台的「台账 · 日志」页手工记 —— 那里才认得出钱从哪来。
+    """
+    try:
+        if BASE_DIR not in sys.path:
+            sys.path.insert(0, BASE_DIR)
+        import journal
+        journal.log("账本", title, detail=detail, level=level, ref=ref)
+    except Exception:
+        pass
+
+
 # ---------------- 自选数据读写 ----------------
 # 「我的自选」只跟行情：没有成本价/数量。分三组 etf / stock / other。
 WATCH_GROUPS = ("etf", "stock", "other")
@@ -205,6 +221,11 @@ def api_add(params):
             "bucket": bucket,
         })
     save_positions(data)
+    _journal("持仓页 %s %s" % ("加仓" if idx is not None else "新建",
+                              code),
+             detail="%s %s ×%d @%.4f%s" % (name, code, shares, cost,
+                                           ("；备注 " + note) if note else ""),
+             ref={"source": "position_manager", "code": code, "shares": shares})
     return {"ok": True, "msg": "已买入/加入", "positions": data["positions"]}
 
 
@@ -232,6 +253,11 @@ def api_delete(params):
         else:
             data["positions"][idx]["shares"] = hold - sell_shares
     save_positions(data)
+    _journal("持仓页卖出/删除 %s" % code,
+             detail=("%s；卖 %s 股%s" % (pos.get("name") or code, sell_shares,
+                                        "" if sell_shares else "（全部）")),
+             ref={"source": "position_manager", "code": code,
+                  "shares": sell_shares})
     return {"ok": True, "msg": "已卖出/删除", "positions": data["positions"]}
 
 
@@ -259,8 +285,13 @@ def api_update(params):
             return {"ok": False, "msg": "数量必须是数字"}
         if value <= 0:
             return {"ok": False, "msg": "数量必须大于 0"}
+    before = pos.get(field)
     data["positions"][idx][field] = (value or "").strip() if field == "bucket" else value
     save_positions(data)
+    _journal("持仓页改 %s 的%s" % (code, field),
+             detail="%s → %s" % (before, data["positions"][idx].get(field)),
+             level="info",
+             ref={"source": "position_manager", "code": code, "field": field})
     return {"ok": True, "msg": "已修改", "positions": data["positions"]}
 
 

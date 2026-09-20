@@ -45,6 +45,10 @@ _CSI_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Referer": "https://www.csindex.com.cn/",
 }
+_TX_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Referer": "https://gu.qq.com/",
+}
 
 _lock = threading.Lock()
 _cache = None
@@ -214,6 +218,40 @@ def tx(code, n=320):
     return _stale(key)
 
 
+def tx_us(sym, n=1000):
+    """腾讯的美股 / 海外指数前复权日线。usNDX = 纳斯达克100，usIXIC = 纳斯达克综合。
+
+    为什么要单独一条：东财的 100.NDX 拿回来的其实是纳斯达克综合指数(.IXIC)，
+    实测数值和腾讯 usIXIC 一模一样、和 usNDX 差 11%。纳指 ETF 的跟踪误差
+    拿综合指数比会得出「跑赢指数 3.5%/年」这种假结论，所以评估基准改用这条。
+
+    单次最多 1000 根（约 4 年），**只够当评估基准，不要拿来回测**：
+    回测要 2004 年起的全历史，腾讯给不了。
+    """
+    key = "txus:%s:%d" % (sym, n)
+    hit = _cached(key, keep_days=TX_KEEP_DAYS)
+    if hit:
+        return hit
+    out = {}
+    try:
+        r = requests.get(
+            "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get",
+            params={"param": "%s,day,,,%d,qfq" % (sym, n)},
+            headers=_TX_HEADERS, timeout=25)
+        node = ((r.json().get("data") or {}).get(sym) or {})
+        for k in (node.get("qfqday") or node.get("day") or []):
+            if len(k) >= 3:
+                try:
+                    out[str(k[0]).replace("-", "")] = float(k[2])
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        out = {}
+    if out:
+        return _store(key, out)
+    return _stale(key)
+
+
 # ------------------------------------------------------------- 汇率（合成）
 
 # 2010-08-23 之前没有离岸人民币数据，用公开的美元兑人民币中间价重建。
@@ -281,13 +319,15 @@ def proxy_series(spec):
         base = csi(code)
     elif src == "tx":
         base = tx(code, spec.get("n", 5000))
+    elif src == "tx_us":
+        base = tx_us(code, spec.get("n", 1000))
     elif src in ("em", "em_fx"):
         base = em(code, spec.get("fqt", 0))
     else:
         return {}
 
     # 海外指数要换成人民币口径（QDII 不对冲汇率）
-    if src == "em_fx" and base:
+    if src in ("em_fx", "tx_us") and base:
         fx = usdcny(base.keys())
         base = {d: v * fx[d] for d, v in base.items() if d in fx}
 
@@ -364,7 +404,7 @@ def warm(specs, parallel=6):
             items.append({k: v for k, v in sp.items()
                           if k not in ("before", "add_yield")})
         # 人民币口径还需要汇率那条腿
-        if spec.get("src") == "em_fx":
+        if spec.get("src") in ("em_fx", "tx_us"):
             items.append({"src": "em", "code": "133.USDCNH", "fqt": 0})
         for it in items:
             tag = "%s:%s" % (it.get("src"), it.get("code"))

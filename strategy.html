@@ -96,8 +96,11 @@
 
   <div class="tabs">
     <button class="tab on" id="tab-plan" onclick="setTab('plan')">配置与计划</button>
+    <button class="tab" id="tab-books" onclick="setTab('books')">三策略建仓</button>
      <button class="tab" id="tab-bt" onclick="setTab('bt')">回测对照</button>
     <button class="tab" id="tab-track" onclick="setTab('track')">盈亏追踪</button>
+    <button class="tab" id="tab-ledger" onclick="setTab('ledger')">台账 · 日志</button>
+    <button class="tab" id="tab-check" onclick="setTab('check')">体检</button>
      <button class="tab" id="tab-llm" onclick="setTab('llm')">模型分析</button>
     <button class="tab" id="tab-data" onclick="setTab('data')">数据</button>
   </div>
@@ -110,7 +113,7 @@
         <thead><tr>
           <th>资产桶</th><th>分组</th><th class="num">目标</th><th class="num">实际</th>
           <th class="num">漂移</th><th class="num">溢价</th><th class="num">目标金额</th><th class="num">当前金额</th>
-          <th class="num">差额</th><th>标的</th>
+          <th class="num">差额</th><th class="num">评级</th><th class="num">建仓以来</th><th>标的</th>
         </tr></thead>
         <tbody id="alloc"></tbody>
       </table>
@@ -129,6 +132,7 @@
       </table>
       <div class="bar">
         <button class="btn go" id="applyBtn" onclick="applyPlan()">✓ 确认执行，写入账本</button>
+        <button class="btn" onclick="seedBook()">🧪 一键全部建仓（实验仓位）</button>
         <span class="note">只处理上面标了「买入 / 卖出」的行；买入成本按参考价记，成交后到持仓页改成实际价。</span>
       </div>
       <div id="planMsg" class="msg"></div>
@@ -146,6 +150,15 @@
         <table><tbody id="history"></tbody></table>
       </div>
     </div>
+  </div>
+
+  <!-- ============ 三策略建仓 ============ -->
+  <div id="pane-books" style="display:none">
+    <div class="panel">
+      <h3>三个挡位的建仓清单</h3>
+      <div class="note" id="booksNote"></div>
+    </div>
+    <div id="books"></div>
   </div>
 
   <!-- ============ 回测 ============ -->
@@ -251,6 +264,184 @@
     </div>
   </div>
 
+  <!-- ============ 台账 · 日志 ============ -->
+  <div id="pane-ledger" style="display:none">
+    <div class="panel">
+      <h3>现金流台账</h3>
+      <div class="note" id="ledTop" style="margin-bottom:10px"></div>
+      <div class="cards" id="ledCards"></div>
+      <div class="bar" style="margin-top:12px">
+        <button class="btn go" onclick="seedBook()">🧪 一键全部建仓（实验仓位）</button>
+        <button class="btn" onclick="markReal()">📌 实验仓位 → 真实成交</button>
+        <button class="btn ghost" onclick="loadLedger()">↻ 刷新台账</button>
+        <span class="note">按当前买卖计划，把每个非现金桶一次买到目标金额。一次写三处：
+          持仓账本 <code>positions.json</code>、现金流台账、事件日志。「实验仓位」只是给
+          这些笔打个标记 —— 等真下单了，把它按实际成交价改掉，标记去掉就行。</span>
+      </div>
+      <div id="ledMsg" class="msg"></div>
+    </div>
+
+    <div class="panel">
+      <h3>怎么记账：买、卖、分红、转钱进来</h3>
+      <table>
+        <thead><tr><th>什么时候</th><th>在哪做</th><th>会自动写什么</th></tr></thead>
+        <tbody>
+          <tr><td><b>真下单买入</b></td>
+            <td>到持仓页把每只的<b>成本价</b>改成实际成交价、<b>份额</b>改成实际股数，
+              然后回这里点「📌 实验仓位 → 真实成交」</td>
+            <td>positions.json（去掉实验标记）· 事件日志</td></tr>
+          <tr><td><b>按计划买 / 卖</b></td>
+            <td>「配置与计划」→ 确认计划 → 点「✓ 确认执行，写入账本」</td>
+            <td>positions.json · <b>现金流台账</b>（买入记支出、卖出记收入，各含手续费）· 事件日志</td></tr>
+          <tr><td><b>在持仓页手工卖</b></td>
+            <td>持仓页卖出之后，回这里手工记一笔「卖出」；有手续费就再记一笔「手续费」</td>
+            <td>持仓页只改 positions.json + 记一行日志，<b>台账不会自动动</b> —— 所以钱要你补</td></tr>
+          <tr><td><b>分红到账 / 逆回购利息</b></td>
+            <td>这里手工记一笔「分红」或「利息」</td>
+            <td>现金流台账 · 事件日志</td></tr>
+          <tr><td><b>从别处加钱进来</b></td>
+            <td>这里手工记一笔「入金」，顺手把右上角「总额」改成新的数</td>
+            <td>现金流台账 · 事件日志</td></tr>
+        </tbody>
+      </table>
+      <div class="note" style="margin-top:8px">
+        一句话的原则：<b>份额和成本以 positions.json 为准，钱的来去以台账为准</b>。
+        这两个账本只有同时对上，页面上的「累计盈亏」才是真的 —— 只改其中一个，
+        数字不会报错，只会慢慢变得不对，那才是最麻烦的。
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>手工记一笔</h3>
+      <div class="bar">
+        <select id="ledKind" style="min-width:auto">
+          <option>入金</option><option>出金</option><option>分红</option>
+          <option>利息</option><option>手续费</option><option>买入</option>
+          <option>卖出</option><option>调整</option>
+        </select>
+        <input id="ledAmount" type="number" placeholder="金额（正数）" style="width:140px">
+        <input id="ledCode" placeholder="代码（可空）" style="width:110px">
+        <input id="ledNote" placeholder="备注（这钱是干嘛的）" style="width:240px">
+        <button class="btn" onclick="addLedger()">记一笔</button>
+      </div>
+      <div class="note">
+        金额永远填正数，方向由类型决定：入金 / 分红 / 利息 进钱，出金 / 手续费 出钱。
+        只有「调整」可以填负数，用来对齐对不上的历史差额。手工记的买入 / 卖出不带手续费，
+        要算费用就单独记一笔「手续费」。
+      </div>
+      <div id="ledAddMsg" class="msg"></div>
+    </div>
+
+    <div class="panel">
+      <h3>流水</h3>
+      <div style="max-height:420px;overflow:auto">
+        <table>
+          <thead><tr><th>时间</th><th>类型</th><th class="num">金额</th>
+            <th class="num">手续费</th><th>代码</th><th>备注</th></tr></thead>
+          <tbody id="ledRows"></tbody>
+        </table>
+      </div>
+      <div class="note" id="ledNote" style="margin-top:8px"></div>
+    </div>
+
+    <div class="panel">
+      <h3>事件日志</h3>
+      <div class="note" id="jrnTop" style="margin-bottom:10px"></div>
+      <div class="bar">
+        <select id="jrnKind" style="min-width:auto" onchange="loadJournal()">
+          <option value="">全部类型</option>
+        </select>
+        <button class="btn ghost" onclick="loadJournal()">↻ 刷新日志</button>
+        <span class="note">只追加、不改写：闸门哪天翻的、哪笔计划什么时候执行的、
+          哪个月报了警、模型当时怎么说的，都在这里。事后复盘「当时为什么这么做」靠它。</span>
+      </div>
+      <div style="max-height:520px;overflow:auto">
+        <table>
+          <thead><tr><th>时间</th><th>类型</th><th>标题</th><th>详情</th></tr></thead>
+          <tbody id="jrnRows"></tbody>
+        </table>
+      </div>
+      <div id="jrnMsg" class="msg"></div>
+    </div>
+  </div>
+
+  <!-- ============ 体检 ============ -->
+  <div id="pane-check" style="display:none">
+    <div class="panel">
+      <h3>策略体检</h3>
+      <div class="note" id="checkTop" style="margin-bottom:10px"></div>
+      <div class="bar">
+        <button class="btn go" onclick="loadCheck(null, true)">跑今天该跑的一档</button>
+        <button class="btn" onclick="loadCheck('weekly', true)">周风险简检</button>
+        <button class="btn" onclick="loadCheck('monthly', true)">月全面体检</button>
+        <button class="btn" onclick="loadCheck('quarterly', true)">季大考</button>
+      </div>
+      <div class="cards" id="checkCards"></div>
+    </div>
+    <div class="panel">
+      <h3>三条报警线</h3>
+      <table>
+        <thead><tr><th>线</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody id="checkAlerts"></tbody>
+      </table>
+      <div class="note" style="margin-top:8px">
+        A1 收益带外：连续两个月落在同期回测 ±1σ 之外 ·
+        A2 该动没动：漂移超 band 且已进再平衡月却还没执行计划 ·
+        A3 该减没减：闸门在减仓，但风险腿实际占比还高于目标。
+      </div>
+    </div>
+    <div class="panel">
+      <h3>持仓评估（一个月一次）</h3>
+      <div class="note" id="holdTop" style="margin-bottom:10px"></div>
+      <div class="bar">
+        <button class="btn go" onclick="loadHoldings(false)">看本月评估</button>
+        <button class="btn" onclick="loadHoldings(true)">重算（拉最新数据）</button>
+      </div>
+      <div style="max-height:460px;overflow:auto">
+        <table>
+          <thead><tr><th>桶 / 标的</th><th>跟踪误差</th><th>日均成交</th>
+            <th>溢价</th><th>结论</th></tr></thead>
+          <tbody id="holdRows"></tbody>
+        </table>
+      </div>
+      <div class="note" style="margin-top:8px">
+        只看产品本身，不看组合：① <b>跟踪误差</b> = 净值 vs 该桶的指数基准，近 250 个
+        交易日年化，分红 / 份额折算日和单日异常偏离都剔除；② <b>日均成交</b> =
+        近 20 日成交额，太薄的买不进也卖不出；③ <b>规模</b> = 季报口径，低于 2 亿提示、
+        贴着 5000 万清盘线报要查；④ <b>溢价</b> = 场内价相对实时估值，超过该桶的闸门就提示。
+        费率、基金公告这些要人工核的东西，暂时不进这一层。
+      </div>
+      <div id="holdMsg" class="msg"></div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>日快照</h3>
+        <div style="max-height:300px;overflow:auto">
+          <table>
+            <thead><tr><th>日期</th><th class="num">累计</th><th class="num">今日盈亏</th>
+              <th class="num">风险乘数</th><th>闸门</th></tr></thead>
+            <tbody id="checkDays"></tbody>
+          </table>
+        </div>
+        <div class="note" style="margin-top:8px">
+          收盘后自动记一条（服务开着就行），周末和节假日不记。
+          同一天重复跑只覆盖同一条。<b>今日盈亏</b> = 今天这条的市值 − 上一条，
+          所以当天有入金 / 出金的话它会一起算进去，那种日子看「累计」更准。
+        </div>
+      </div>
+      <div class="panel">
+        <h3>报警历史</h3>
+        <div style="max-height:300px;overflow:auto">
+          <table><tbody id="checkHist"></tbody></table>
+        </div>
+        <div class="note" style="margin-top:8px">
+          同一条线同一个月只记一次，避免刷屏。
+        </div>
+      </div>
+    </div>
+    <div id="checkMsg" class="msg"></div>
+  </div>
+
   <!-- ============ 模型分析 ============ -->
   <div id="pane-llm" style="display:none">
     <div class="panel">
@@ -296,7 +487,19 @@ const pct = (v, d=1) => (v === null || v === undefined || isNaN(v)) ? "-" : (v*1
 const spct = (v, d=1) => (v === null || v === undefined || isNaN(v)) ? "-" : (v>0?"+":"") + (v*100).toFixed(d) + "%";
 const yuan = v => (v === null || v === undefined || isNaN(v)) ? "-" : Number(v).toLocaleString("zh-CN", {maximumFractionDigits:0});
 
-let LIST = null, BOARD = null, TRACK = null, TAB = "plan";
+let LIST = null, BOARD = null, TRACK = null, CHECK = null, CHECKST = null, HOLD = null,
+    LEDGER = null, JOURNAL = null, BOOKS = null, TAB = "plan";
+
+const esc = s => String(s === null || s === undefined ? "" : s)
+  .replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))
+  .replace(/\n/g, "<br>");
+const esq = s => String(s === null || s === undefined ? "" : s)
+  .replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]))
+  .replace(/\n/g, " ");
+const money = v => (v === null || v === undefined || isNaN(v)) ? "-"
+  : (v < 0 ? "−" : "") + "¥" + yuan(Math.abs(v));
+const smoney = v => (v === null || v === undefined || isNaN(v)) ? "-"
+  : (v >= 0 ? "+" : "−") + "¥" + yuan(Math.abs(v));
 
 async function api(path, data) {
   const opt = { method: data ? "POST" : "GET", headers: { "Content-Type": "application/json" } };
@@ -309,12 +512,16 @@ function setStatus(t) { $("status").textContent = t || ""; }
 
 function setTab(t) {
   TAB = t;
-  ["plan", "bt", "track", "llm", "data"].forEach(k => {
+  ["plan", "books", "bt", "track", "ledger", "check", "llm", "data"].forEach(k => {
     $("pane-" + k).style.display = (k === t) ? "" : "none";
     $("tab-" + k).className = "tab" + (k === t ? " on" : "");
   });
+  if (t === "books") loadBooks();
   if (t === "bt" && BOARD) drawChart();
   if (t === "track") loadTrack(true);
+  if (t === "ledger") loadLedger();
+  if (t === "check") loadCheck(null, false);
+  if (t === "check" && !HOLD) loadHoldings(false);
   if (t === "llm" && BOARD) loadSnapshot();
 }
 
@@ -361,7 +568,7 @@ async function load() {
             "&drag_bp=" + ($("drag") ? $("drag").value : 0);
   BOARD = await api(q);
   setStatus("");
-  if (!BOARD || !BOARD.ok) { $("alloc").innerHTML = "<tr><td colspan=10>加载失败：" + ((BOARD||{}).msg||"") + "</td></tr>"; return; }
+  if (!BOARD || !BOARD.ok) { $("alloc").innerHTML = "<tr><td colspan=12>加载失败：" + ((BOARD||{}).msg||"") + "</td></tr>"; return; }
   // 一块面板报错不该让整页跟着白掉 —— 逐块 try，出错的在状态栏点名。
   const panels = [["顶部卡片", renderCards], ["配置对照", renderAlloc], ["买卖计划", renderPlan],
                   ["方案对照", renderMetrics], ["回测窗口", renderBT], ["流水", renderHistory]];
@@ -449,6 +656,35 @@ function premCell(b) {
   return s;
 }
 
+/* 买卖评级：买入 / 不动 / 卖出。不带任何预测，理由全在 title 里摊开。 */
+function rateCell(b) {
+  const r = b.rating || {};
+  if (!r.level) return '<span style="color:#8a94a3">—</span>';
+  const cls = r.level === "buy" ? "buy" : r.level === "sell" ? "sell" : "hold";
+  return '<span class="tag ' + cls + '" title="' + (r.why || "") + '">' + r.text + '</span>' +
+    '<div class="note" style="font-size:11px;line-height:1.4;text-align:right">' +
+    (r.why || "") + '</div>';
+}
+
+/* 建仓以来：涨跌 + 金额 + 期间最大回撤。数字是现算的，不留历史文件。 */
+function sinceCell(b) {
+  const s = b.since;
+  if (!s) return '<span style="color:#8a94a3">—</span>';
+  // 建仓当天：净值还没跑过一格，摊开一列 0.00% 反而看不清，直接写明白。
+  if (!s.mdd_day && !s.ret) {
+    return '<span style="color:#8a94a3">刚建仓</span>' +
+      '<div class="note" style="font-size:11px">' + smoney(s.pnl) + '</div>';
+  }
+  const col = s.ret >= 0 ? "#12a15d" : "#e64545";
+  let h = '<b style="color:' + col + '">' + spct(s.ret, 2) + '</b>';
+  h += '<div class="note" style="font-size:11px">' + smoney(s.pnl) + '</div>';
+  h += '<div class="note" style="font-size:11px">最大回撤 <b style="color:' +
+    (s.mdd < 0 ? "#e64545" : "#8a94a3") + '">' + (s.mdd ? spct(s.mdd, 2) : "0.00%") + '</b>' +
+    (s.mdd_day ? ' <span style="color:#8a94a3">' +
+      s.mdd_day.slice(4, 6) + "/" + s.mdd_day.slice(6, 8) + '</span>' : "") + '</div>';
+  return h;
+}
+
 function renderAlloc() {
   const m = BOARD.monitor;
   const rs = m.risk || {};
@@ -474,6 +710,8 @@ function renderAlloc() {
       '<td class="num">' + yuan(b.actual_value) + navNote(b) + '</td>' +
       '<td class="num" style="color:' + (b.delta_value > 0 ? "#12a15d" : "#e64545") + '">' +
         (b.delta_value > 0 ? "+" : "") + yuan(b.delta_value) + '</td>' +
+      '<td class="num">' + rateCell(b) + '</td>' +
+      '<td class="num">' + sinceCell(b) + '</td>' +
       '<td class="note">' + (b.instruments || []).join(" / ") + '</td></tr>';
   });
   $("alloc").innerHTML = html;
@@ -484,7 +722,105 @@ function renderAlloc() {
     "所以该买但溢价超上限的桶会被标成「暂缓买入」。" +
     (m.gate_used !== null && m.gate_used !== undefined
       ? " 当前目标权重" + (m.gate_used ? "已按趋势闸打折（风险资产砍半）" : "按标准配置") + "。" : "") +
-    (rs.enabled ? " 风险预算 ×" + fmt(rs.multiplier, 2) + "：" + (rs.summary || "正常") + "。" : "");
+    (rs.enabled ? " 风险预算 ×" + fmt(rs.multiplier, 2) + "：" + (rs.summary || "正常") + "。" : "") +
+    "<br><b>评级</b>只有三档，没有第四档：<b>买入</b> = 离目标还差一个 band 以上，" +
+    "<b>卖出</b> = 超出目标一个 band 以上，<b>不动</b> = 在 band 以内。" +
+    "两条修正：该买但场内溢价超上限 → 降成「不动」；" +
+    "该买但闸门 / 分层减仓开着、又属于风险腿 → 也降成「不动」。" +
+    "该卖的时候溢价高不拦着 —— 卖本来就该挑贵的时候。" +
+    "评级只说「现在该不该动」，一个涨跌预测都不含：评级变了，" +
+    "一定是差额、溢价、闸门这三样里有一样变了。" +
+    sinceNote(m.since, m.since_error);
+}
+
+function sinceNote(s, err) {
+  if (!s) return "<br><b>建仓以来</b>：" + (err || "还没建账，先在「配置与计划」里建一次仓。");
+  const t = s.total || {};
+  const col = t.ret >= 0 ? "#12a15d" : "#e64545";
+  return "<br><b>建仓以来</b>（起点 " + s.start + "，已过 " + s.days + " 天，" +
+    (s.basis === "actual" ? "实盘口径" : "纸上建仓") + "）：组合 " +
+    '<b style="color:' + col + '">' + spct(t.ret, 2) + "</b>（" + smoney(t.pnl) +
+    "），期间最大回撤 <b>" + (t.mdd ? spct(t.mdd, 2) : "0.00%") + "</b>" +
+    (t.mdd_day ? "（谷底 " + t.mdd_day + "）" : "") +
+    "。单桶的回撤一定比组合深 —— 这就是分散的意义。" +
+    " 这一列不存历史文件，每次拿复权净值现算，取不到净值就显示「—」。";
+}
+
+/* ================= 三策略建仓 ================= */
+async function loadBooks() {
+  setStatus("读取三套方案…");
+  BOOKS = await api("/api/strategy/books");
+  setStatus("");
+  try { renderBooks(); } catch (e) { setStatus("三策略建仓渲染失败：" + e.message); }
+}
+
+function renderBooks() {
+  const b = BOOKS;
+  if (!b || !b.ok) {
+    $("books").innerHTML = '<div class="panel">加载失败：' + esc((b || {}).msg || "") + '</div>';
+    return;
+  }
+  const g = b.gate || {}, rs = b.risk || {};
+  $("booksNote").innerHTML =
+    '同一个总额、同一批标的，三个挡位的差别只在权重。' +
+    '<b>设计</b>是方案本来写的权重，<b>现在目标</b>是它经趋势闸 / 分层减仓压缩之后' +
+    '今天真正该用的权重 —— 闸门没触发、风险正常的时候，两个数一模一样。' +
+    '这一页不碰持仓，所以三套是同一份口径，随时能拿来互相比。' +
+    '<br>当前趋势闸 ' + gatewayText(g) + '，风险预算 ×' + fmt(rs.multiplier, 2) +
+    '（' + esc(rs.summary || "正常") + '）。' +
+    ' <b>备用 / 场外替代</b>是场内买不到便宜货时的退路：纳指 QDII 的场内溢价是常态，' +
+    '溢价超过上限就走场外联接，按净值申购、没有溢价这一说。';
+
+  let html = "";
+  b.books.forEach(bk => {
+    const cash = bk.rows.find(r => r.key === "cash") || {};
+    const cashV = Number(cash.target_value || 0);
+    const invest = Number(bk.total || 0) - cashV;
+    html += '<div class="panel">' +
+      '<h3>' + esc(bk.name) +
+        ' <span class="note" style="font-weight:400">风险腿合计 ' + pct(bk.risk_w, 1) + '</span></h3>' +
+      '<div class="note">策略 ' + esc(bk.id) + ' · 可投资总额 ' + money(b.capital) +
+        ' · 单桶 band ' + pct(b.band, 0) + '（= ' + money(b.band_value) + '）' +
+        ' · 趋势闸 ' + gatewayText(g) + ' · 生成于 ' + esc(b.asof || "") + '</div>' +
+      '<table><thead><tr>' +
+        '<th>资产桶</th><th>分组</th><th class="num">设计</th><th class="num">现在目标</th>' +
+        '<th class="num">建仓金额</th><th>推荐标的</th><th>备用 / 场外替代</th><th>说明</th>' +
+      '</tr></thead><tbody>';
+    bk.rows.forEach(r => {
+      const moved = Math.abs(Number(r.now_w) - Number(r.design_w)) > 1e-9;
+      const alts = (r.alt || []).map(a =>
+        esc(a.name || a.code) + '（' + esc(a.code) + '）').join('<br>');
+      const note = String(r.note || "");
+      html += '<tr>' +
+        '<td><b>' + esc(r.name) + '</b></td>' +
+        '<td class="note">' + esc(r.group) + '</td>' +
+        '<td class="num">' + pct(r.design_w) + '</td>' +
+        '<td class="num">' + (moved
+          ? '<b style="color:#e08b2a">' + pct(r.now_w) + '</b>' : pct(r.now_w)) + '</td>' +
+        '<td class="num">' + money(r.target_value) + '</td>' +
+        '<td class="note">' + esc((r.instruments || []).join(" / ")) + '</td>' +
+        '<td class="note">' + (alts || '<span style="color:#8a94a3">—</span>') + '</td>' +
+        '<td class="note" title="' + esq(note) + '">' +
+          esc(note.length > 90 ? note.slice(0, 90) + "…" : note) + '</td>' +
+      '</tr>';
+    });
+    html += '</tbody></table>' +
+      '<div class="note" style="margin-top:10px">从零建仓：这一档要摆 <b>' + bk.rows.length +
+        '</b> 个桶，其中 <b>' + money(cashV) + '</b> 留在现金桶（货币 ETF / 逆回购），' +
+        '真正买出去的是 <b>' + money(invest) + '</b>。' +
+        '单桶偏离目标超过 ' + pct(b.band, 0) + '（= ' + money(b.band_value) + '）才动手。' +
+      '</div></div>';
+  });
+  $("books").innerHTML = html;
+}
+
+function gatewayText(g) {
+  if (!g || g.ok === false) return "取不到（" + esc(g && g.msg || "没数据") + "）";
+  const dir = g.on ? "跌破" : "还在";
+  return (g.on ? "<b style='color:#e08b2a'>已触发</b>" : "没触发") +
+    '（' + esc(g.index || "H00300") + " " + esc(g.date || "") + " " +
+    (g.gap === undefined || g.gap === null ? "" : spct(g.gap) + " ") + dir +
+    " MA" + (g.window || 200) + "）";
 }
 
 /* ================= 计划 ================= */
@@ -521,7 +857,9 @@ async function applyPlan() {
   const rows = (p.rows || []).filter(r => r.action === "买入" || r.action === "卖出");
   if (!rows.length) { $("planMsg").className = "msg err"; $("planMsg").textContent = "没有可执行的行。"; return; }
   const n = rows.filter(r => r.action === "买入").length, s = rows.filter(r => r.action === "卖出").length;
-  if (!confirm("确认把 " + n + " 笔买入、" + s + " 笔卖出写入账本？\n这只改 positions.json，不会真的下单。")) return;
+  if (!confirm("确认把 " + n + " 笔买入、" + s + " 笔卖出写入账本？\n\n" +
+               "会同时写 positions.json（份额/成本）和现金流台账（买入记支出、卖出记收入，各含手续费）。" +
+               "\n不会真的下单，也不会动你的银行账户。")) return;
   const r = await api("/api/strategy/apply", { rows: rows, id: BOARD.id });
   $("planMsg").className = "msg " + (r.ok ? "ok" : "err");
   $("planMsg").textContent = r.msg || "";
@@ -769,6 +1107,325 @@ async function initTrack() {
        " · 现金 ¥" + yuan(r.cash))
     : (r.msg || "建账失败");
   if (r.ok) await loadTrack(false);
+}
+
+/* ================= 体检 ================= */
+// 四档：日快照（只记不判）/ 周风险简检 / 月全面体检 / 季大考。
+// 三条报警线（A1 收益带外、A2 该动没动、A3 该减没减）每次都一起算。
+async function loadCheck(level, record) {
+  setStatus("体检中…");
+  const qs = [];
+  if (level) qs.push("level=" + encodeURIComponent(level));
+  if (record) qs.push("record=1");
+  const r = await api("/api/strategy/check" + (qs.length ? "?" + qs.join("&") : ""));
+  const s = await api("/api/strategy/check?status=1");
+  setStatus("");
+  if (!r || !r.ok) {
+    $("checkMsg").className = "msg err";
+    $("checkMsg").textContent = (r && r.msg) || "体检失败";
+    return;
+  }
+  CHECK = r;
+  CHECKST = (s && s.ok) ? s : null;
+  $("checkMsg").className = "msg";
+  $("checkMsg").textContent = "";
+  renderCheck();
+}
+
+function renderCheck() {
+  const r = CHECK, s = CHECKST;
+  if (!r) return;
+  const lvName = { daily: "日快照", weekly: "周风险简检", monthly: "月全面体检",
+                   quarterly: "季大考" }[r.level] || r.level;
+  const bad = (r.verdict === "报警" || r.verdict === "要查" || r.verdict === "警戒");
+  $("checkTop").innerHTML =
+    "<b>" + lvName + "</b> · " + (r.date || "") +
+    " · 结论 <b style=\"color:" + (bad ? "#d9534f" : "#2e7d32") + "\">" +
+    (r.verdict || "") + "</b>" +
+    (s ? "　日快照 " + (s.day_count || 0) + " 条，今天该跑：" +
+         (({ daily: "日快照", weekly: "周风险简检", monthly: "月全面体检",
+             quarterly: "季大考" })[s.today_level] || s.today_level) : "") +
+    "<br>" + (r.headline || "");
+
+  $("checkCards").innerHTML = (r.items || []).map(it =>
+    "<div class=\"card\"><div class=\"k\">" + (it.name || "") + "</div>" +
+    "<div class=\"v\">" + (it.value === null || it.value === undefined ? "-" : it.value) + "</div>" +
+    "<div class=\"note\">" + (it.note || "") + "</div></div>").join("");
+
+  const als = (r.alerts && r.alerts.length) ? r.alerts : ((s && s.alerts) || []);
+  $("checkAlerts").innerHTML = als.map(a => {
+    const cls = a.state === "报警" ? "color:#d9534f;font-weight:600"
+              : (a.state === "正常" ? "color:#2e7d32" : "color:#b8860b");
+    return "<tr><td><b>" + a.code + "</b> " + a.title + "</td>" +
+           "<td style=\"" + cls + "\">" + (a.state || "") + "</td>" +
+           "<td>" + (a.detail || "") + "</td></tr>";
+  }).join("");
+
+  const days = (s && s.recent_days) || [];
+  const dayPnl = d => {
+    if (d.pnl_day === null || d.pnl_day === undefined) return "—";
+    return smoney(d.pnl_day) + (d.flow_day
+      ? "<div class=\"note\" style=\"font-size:11px\">含当日入金/出金</div>" : "");
+  };
+  $("checkDays").innerHTML = days.length
+    ? days.slice().reverse().map(d =>
+        "<tr><td>" + d.date + "</td>" +
+        "<td class=\"num\">" + spct(d.cum) + "</td>" +
+        "<td class=\"num\" style=\"color:" + (d.pnl_day >= 0 ? "#12a15d" : "#e64545") +
+          "\">" + dayPnl(d) + "</td>" +
+        "<td class=\"num\">" + (d.mult === null || d.mult === undefined ? "-" : Number(d.mult).toFixed(2)) + "</td>" +
+        "<td>" + (d.gate_on ? "闸门开" : "闸门关") + "</td></tr>").join("")
+    : "<tr><td colspan=5>还没有日快照。服务开着就会自动记，也可以点上面的按钮。</td></tr>";
+
+  const hist = (s && s.alert_history) || [];
+  $("checkHist").innerHTML = hist.length
+    ? hist.slice().reverse().map(a =>
+        "<tr><td>" + a.date + "</td><td>" + a.code + "</td>" +
+        "<td>" + (a.title || "") + "</td><td>" + (a.detail || "") + "</td></tr>").join("")
+    : "<tr><td colspan=4>还没报过警。</td></tr>";
+}
+
+/* ================= 持仓评估 ================= */
+// 一个月一次，只看产品本身：跟踪误差 / 日均成交 / 溢价。
+// 跟上面四档不冲突：那四档看到的是组合，这一档才看到手里那只 ETF。
+async function loadHoldings(force) {
+  setStatus(force ? "重算持仓评估…（要拉 11 只产品的净值和成交额，约 10 秒）"
+                  : "读持仓评估…");
+  const r = await api("/api/strategy/holdings" + (force ? "?force=1" : ""));
+  setStatus("");
+  if (!r || !r.ok) {
+    $("holdMsg").className = "msg err";
+    $("holdMsg").textContent = (r && r.msg) || "持仓评估失败";
+    return;
+  }
+  HOLD = r;
+  $("holdMsg").className = "msg";
+  $("holdMsg").textContent = "";
+  renderHoldings();
+}
+
+function renderHoldings() {
+  const r = HOLD;
+  if (!r) return;
+  const col = v => v === "要查" ? "#e64545" : (v === "关注" ? "#e08b2a" : "#12a15d");
+  const bad = (r.rows || []).filter(x => x.verdict !== "正常");
+  $("holdTop").innerHTML =
+    "<b>" + (r.month || "") + "</b> · " + (r.asof || "") +
+    " · 结论 <b style=\"color:" + col(r.verdict) + "\">" + (r.verdict || "-") + "</b>" +
+    " · 共 " + ((r.rows || []).length) + " 只" +
+    (r.cached ? "（本月已经算过，直接读结果）" : "（刚重算）") +
+    (bad.length ? "<br>要看：" + bad.map(x =>
+      x.code_name + "(" + x.code + ") " + x.verdict).join("、") : "　全部正常");
+
+  $("holdRows").innerHTML = ((r.rows || []).map(x => {
+    const t = x.tracking || {}, tv = x.turnover || {}, p = x.premium || {};
+    const te = t.ok
+      ? "<b>" + pct(t.te, 2) + "/年</b><div class=\"note\" style=\"font-size:11px\">" +
+        "区间差 " + spct(t.gap) + " · " + (t.n || 0) + " 天" +
+        "<br>vs " + (t.bench || "-") + "</div>"
+      : "<span style=\"color:#8a94a3\">不判</span>" +
+        "<div class=\"note\" style=\"font-size:11px\">" + (t.msg || "-") + "</div>";
+    const pf = x.profile || {};
+    const liq = (tv.ok
+      ? "<b>" + fmt(tv.avg / 1e8, 2) + " 亿</b><div class=\"note\" style=\"font-size:11px\">" +
+        "近 " + (tv.n || 0) + " 日均值</div>"
+      : "<span style=\"color:#8a94a3\">—</span>") +
+      ((pf.ok && pf.scale !== null && pf.scale !== undefined)
+        ? "<div class=\"note\" style=\"font-size:11px\">规模 " + fmt(pf.scale, 1) +
+          " 亿（" + (pf.scale_date || "-") + "）</div>" : "");
+    const pg = p.gate || {};
+    const pc = pg.level === "block" ? "#e64545" : pg.level === "warn" ? "#e08b2a"
+      : pg.level === "good" ? "#12a15d" : "#8a94a3";
+    const pm = (p.premium === null || p.premium === undefined)
+      ? "<span style=\"color:#8a94a3\">—</span>"
+      : "<b style=\"color:" + pc + "\">" + spct(p.premium, 2) + "</b>" +
+        ((p.percentile === null || p.percentile === undefined) ? "" :
+          "<div class=\"note\" style=\"font-size:11px\">近三年 " + fmt(p.percentile, 0) +
+          "% 分位 · 中位 " + spct(p.median) + "</div>");
+    return "<tr><td><b>" + (x.bucket || "") + "</b>" +
+      "<div class=\"note\" style=\"font-size:11px\">" + (x.code_name || "") + " " +
+      (x.code || "") + "</div></td>" +
+      "<td>" + te + "</td><td>" + liq + "</td><td>" + pm + "</td>" +
+      "<td><b style=\"color:" + col(x.verdict) + "\">" + (x.verdict || "") + "</b>" +
+      "<div class=\"note\" style=\"font-size:11px\">" +
+      (x.notes || []).join("<br>") + "</div></td></tr>";
+  }).join("")) ||
+    "<tr><td colspan=5>还没有评估结果，点上面的按钮跑一次。</td></tr>";
+}
+
+/* ================= 台账 · 日志 ================= */
+// 台账回答两个问题：「我到底投进去多少钱」和「我赚了多少钱」。
+// positions.json 只知道后者（现在持有什么、值多少），前者只有台账记得住 ——
+// 分几批建仓、场内外混着买的时候，这两个数分不开就永远算不清收益。
+async function loadLedger() {
+  $("ledTop").textContent = "读取台账…";
+  const r = await api("/api/strategy/ledger?limit=200");
+  if (!r.ok) { $("ledTop").textContent = "台账读取失败：" + (r.msg || ""); return; }
+  LEDGER = r;
+  renderLedger();
+  loadJournal();
+}
+
+function ledSign(e) {
+  const a = Number(e.amount || 0);
+  if (e.kind === "入金" || e.kind === "分红" || e.kind === "利息") return a;
+  if (e.kind === "调整") return a;
+  return -a;
+}
+
+function renderLedger() {
+  const r = LEDGER || {}, m = r.market || {}, bk = r.by_kind || {};
+  const cards = [
+    { k: "净投入", v: money(r.net_in),
+      n: "入金 " + money(bk["入金"]) + " − 出金 " + money(bk["出金"]) +
+         (r.paper_in ? "（含实验 " + money(r.paper_in) + "）" : "") },
+    { k: "台账现金", v: money(r.cash),
+      n: "净投入 − 买入 − 手续费 + 卖出" },
+    { k: "持仓市值", v: money(m.value),
+      n: (m.n || 0) + " 笔持仓，按现价算 · 成本 " + money(m.cost) },
+    { k: "总资产", v: money(r.total),
+      n: r.days === null || r.days === undefined ? "还没建账" : "记账 " + r.days + " 天" },
+    { k: "累计盈亏", v: (r.pnl >= 0 ? "+" : "−") + "¥" + yuan(Math.abs(r.pnl || 0)),
+      n: "收益率 " + spct(r.ret) + " · 年化 " + spct(r.ann) +
+         (r.days !== null && r.days < 30 ? "（满 30 天才算年化）" : ""),
+      cls: r.pnl >= 0 ? "tag on" : "tag off" },
+    { k: "浮动盈亏", v: (r.float_pnl >= 0 ? "+" : "−") + "¥" + yuan(Math.abs(r.float_pnl || 0)),
+      n: "市值 − 买入净成本 − 手续费" },
+  ];
+  $("ledCards").innerHTML = cards.map(c =>
+    '<div class="card"><div class="k">' + c.k + '</div><div class="v">' +
+    (c.cls ? '<span class="' + c.cls + '">' + c.v + '</span>' : c.v) +
+    '</div><div class="n">' + (c.n || "") + '</div></div>').join("");
+
+  const first = r.first ? r.first.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : "-";
+  $("ledTop").innerHTML = r.n
+    ? "共 <b>" + r.n + "</b> 笔 · 起 " + first +
+      " · 买入 " + money(r.buy) + " · 卖出 " + money(r.sell) +
+      " · 分红 " + money(r.dividend) + " · 利息 " + money(r.interest) +
+      " · 手续费 " + money(r.fee) +
+      (r.paper_in ? '<br><b style="color:#e08b2a">⚠ 其中 ' + money(r.paper_in) +
+        " 是实验（纸上）建仓，不是真花掉的钱。</b>" : "")
+    : "台账还是空的。<code>output/ledger.json</code> 就是它 —— 要么点上面「一键全部建仓」，" +
+      "要么在下面手工记一笔入金。";
+
+  const es = r.entries || [];
+  $("ledRows").innerHTML = es.length ? es.map(e => {
+    const s = ledSign(e);
+    return '<tr' + (e.paper ? ' class="hot"' : '') + '>' +
+      '<td class="note">' + esc(e.at) + '</td>' +
+      '<td>' + esc(e.kind) + (e.paper ? ' <span class="note">实验</span>' : '') + '</td>' +
+      '<td class="num" style="color:' + (s >= 0 ? "#12a15d" : "#e64545") + '">' + smoney(s) + '</td>' +
+      '<td class="num">' + (e.fee ? fmt(e.fee, 2) : "-") + '</td>' +
+      '<td class="note">' + esc(e.code || "") +
+        (e.shares ? ' ×' + yuan(e.shares) : '') + '</td>' +
+      '<td class="note">' + esc(e.note || "") + '</td></tr>';
+  }).join("") : '<tr><td colspan="6" class="note">还没有流水。</td></tr>';
+
+  const rec = r.recon || {};
+  $("ledNote").innerHTML = rec.note
+    ? "买入净成本 " + money(rec.cost_basis) + " · 现在市值 " + money(rec.market_value) +
+      " · 浮动盈亏 " + smoney(rec.float_pnl) + "。" + rec.note
+    : "";
+}
+
+// 实验仓位 → 真实成交：真下单之后把 paper 标记清掉。只动标记，价格 / 份额 /
+// 现金一分不改 —— 那些是事实，改它们要自己到持仓页改。
+async function markReal() {
+  if (!confirm("把账本和台账里所有「实验仓位」标记去掉，标成真实成交？\n\n" +
+               "只动标记：价格、份额、现金一分不改。\n" +
+               "建议先到持仓页把成本价和份额改成实际成交数。")) return;
+  const r = await api("/api/strategy/paper", {});
+  seedMsg(r.ok ? (r.msg || "已转成真实成交") : (r.msg || "转不了"), r.ok);
+  if (r.ok) { await load(); await loadLedger(); }
+}
+
+async function addLedger() {
+  const amount = parseFloat($("ledAmount").value);
+  if (!amount) {
+    $("ledAddMsg").className = "msg err";
+    $("ledAddMsg").textContent = "金额要填（正数；只有「调整」能填负数）。";
+    return;
+  }
+  const r = await api("/api/strategy/ledger", {
+    kind: $("ledKind").value, amount: amount,
+    code: $("ledCode").value, note: $("ledNote").value,
+  });
+  $("ledAddMsg").className = "msg " + (r.ok ? "ok" : "err");
+  $("ledAddMsg").textContent = r.ok
+    ? ("已记：" + r.entry.kind + " ¥" + yuan(r.entry.amount))
+    : (r.msg || "记账失败");
+  if (r.ok) { $("ledAmount").value = ""; $("ledNote").value = ""; await loadLedger(); }
+}
+
+function seedMsg(t, ok) {
+  ["ledMsg", "planMsg"].forEach(id => {
+    const el = $(id);
+    if (el) { el.className = "msg " + (ok ? "ok" : (ok === false ? "err" : "")); el.textContent = t; }
+  });
+  setStatus(t);
+}
+
+// 一键全部建仓：给「还没买任何东西」用的。空账户里每一条计划都是买入，
+// 差额就是目标金额本身，逐笔点确认没有意义。它写三处：账本 / 台账 / 日志。
+async function seedBook() {
+  const p = BOARD && BOARD.plan;
+  if (!p || !p.ok) { seedMsg("买卖计划还没算出来，先等它显示出来。", false); return; }
+  const legs = (p.rows || []).filter(r => r.key !== "cash" && r.action === "买入" && r.shares > 0);
+  if (!legs.length) { seedMsg("按现在的计划一笔都不用买。", false); return; }
+  const skips = (p.rows || []).filter(r => r.key !== "cash" && !(r.action === "买入" && r.shares > 0));
+  const spend = legs.reduce((a, r) => a + (r.amount || 0), 0);
+  const cap = p.capital || 0;
+  const txt = "按当前计划一次买入 " + legs.length + " 个桶：\n\n" +
+    legs.map(r => "  " + r.name + "  " + (r.instrument || "") + " ×" + r.shares +
+                  "  ≈ ¥" + yuan(r.amount) + "（目标 " + pct(r.target_w) + "）").join("\n") +
+    (skips.length ? "\n\n跳过：" + skips.map(r => r.name + "（" + r.action + "：" + (r.why || "") + "）").join("\n") : "") +
+    "\n\n合计 ¥" + yuan(spend) + " · 剩余现金 ¥" + yuan(cap - spend) +
+    "\n\n会写入 positions.json（标成实验仓位）、现金流台账、事件日志。继续？";
+  if (!confirm(txt)) return;
+  let r = await api("/api/strategy/seed", { id: BOARD.id, paper: true });
+  if (r.need_force && confirm(r.msg + "\n\n确定覆盖重建？")) {
+    r = await api("/api/strategy/seed", { id: BOARD.id, paper: true, force: true });
+  }
+  if (!r.ok) { seedMsg(r.msg || "建仓失败", false); return; }
+  seedMsg("已建 " + r.positions + " 笔 · 投入 ¥" + yuan(r.spent) +
+          " · 现金 ¥" + yuan(r.cash) + " · " + (r.tracker || ""), true);
+  await load();
+  await loadLedger();
+  loadTrack(true, true);
+}
+
+async function loadJournal() {
+  const k = $("jrnKind").value;
+  const r = await api("/api/strategy/journal?limit=150" +
+                      (k ? "&kind=" + encodeURIComponent(k) : ""));
+  if (!r.ok) { $("jrnTop").textContent = "日志读取失败：" + (r.msg || ""); return; }
+  JOURNAL = r;
+  renderJournal();
+}
+
+function renderJournal() {
+  const r = JOURNAL || {}, s = r.stats || {};
+  const sel = $("jrnKind");
+  if (sel.options.length <= 1 && (s.kinds || []).length) {
+    (s.kinds || []).forEach(k => {
+      const o = document.createElement("option"); o.value = k; o.textContent = k;
+      sel.appendChild(o);
+    });
+  }
+  const by = s.by_kind || {};
+  $("jrnTop").innerHTML = "共 <b>" + (s.total || 0) + "</b> 条 · 起 " +
+    (s.first || "-") + " · 止 " + (s.last || "-") +
+    (Object.keys(by).length ? " · " +
+      Object.keys(by).map(k => k + " " + by[k]).join(" / ") : "");
+  const col = l => l === "alert" ? "#e64545" : l === "warn" ? "#e08b2a"
+    : l === "act" ? "#3b82f6" : "#8a94a3";
+  const items = r.items || [];
+  $("jrnRows").innerHTML = items.length ? items.map(e =>
+    '<tr><td class="note">' + esc(e.at) + '</td>' +
+    '<td><span style="color:' + col(e.level) + '">' + esc(e.kind) + '</span></td>' +
+    '<td>' + esc(e.title) + (e.sid ? ' <span class="note">[' + esc(e.sid) + ']</span>' : '') + '</td>' +
+    '<td class="note">' + esc(e.detail || "") + '</td></tr>').join("")
+    : '<tr><td colspan="4" class="note">还没有日志。闸门翻转、执行计划、报警、模型结论都会自动记在这里。</td></tr>';
 }
 
 /* ================= 模型分析 ================= */

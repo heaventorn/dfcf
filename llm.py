@@ -276,6 +276,17 @@ def analyze(question=None, sid=None, model=None, drag=0.0, timeout=None,
             think = (msg.get("reasoning_content") or "").strip()
             fin = ch.get("finish_reason")
             if text:
+                # 模型说过的话也要留痕：半年后回看「当时它怎么看」，
+                # 比回看一堆净值数字有用。只存前 300 字，正文在页面上。
+                try:
+                    import journal
+                    journal.log("模型", "模型分析（%s）" % m,
+                                detail="问：%s\n答：%s"
+                                       % ((question or "默认问题")[:100],
+                                          text[:300]),
+                                sid=sid, ref={"model": m, "usage": d.get("usage")})
+                except Exception:
+                    pass
                 return {"ok": True, "text": text, "model": m,
                         "usage": d.get("usage"), "snapshot": snap,
                         "reasoning": think or None,

@@ -136,35 +136,50 @@ def _fresh(node, ttl):
 
 # ------------------------------------------------------------------ 历史
 
-def fetch_nav(code):
-    """全部历史单位净值 {YYYYMMDD: nav}。
+def _nav_from_js(text):
+    """从 pingzhongdata 的 JS 里抠出单位净值 + 分红/折算记录。
+
+    第二个返回值是 {日期: 说明}，只在基金做过分红或份额折算时才有值。
+    持仓评估要靠它把「分红那天净值凭空掉一块」从跟踪误差里剔掉，
+    不然后面会算出 510300 一年 2.55% 的跟踪误差（真实值 0.19%）。
+    """
+    import re
+    nav, ev = {}, {}
+    m = re.search(r"var Data_netWorthTrend\s*=\s*(\[.*?\]);", text)
+    for x in (json.loads(m.group(1)) if m else []):
+        try:
+            ms, v = float(x.get("x")), float(x.get("y"))
+        except (TypeError, ValueError):
+            continue
+        # 时间戳是北京时间当日 0 点
+        d = datetime.datetime.utcfromtimestamp(ms / 1000.0 + 8 * 3600)
+        if v > 0:
+            nav[d.strftime("%Y%m%d")] = v
+        if x.get("unitMoney"):
+            ev[d.strftime("%Y%m%d")] = str(x["unitMoney"])
+    return nav, ev
+
+
+def fetch_nav(code, want_events=False):
+    """全部历史单位净值 {YYYYMMDD: nav}（want_events=True 时带上分红记录）。
 
     走 pingzhongdata：一个请求带回全部历史（513100 有 3217 个点）。
-    lsjz 接口每页最多 20 条，拉十几年要点一百多次，只做兜底。
+    lsjz 接口每页最多 20 条，拉十几年要点一百多次，只做兜底 ——
+    而且兜底那条没有分红记录，只能给空表。
     """
     import re
     import requests
-    out = {}
+    out, ev = {}, {}
     try:
         url = "https://fund.eastmoney.com/pingzhongdata/%s.js" % code
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0",
                                        "Referer": "https://fund.eastmoney.com/%s.html" % code},
                          timeout=30)
-        m = re.search(r"var Data_netWorthTrend\s*=\s*(\[.*?\]);", r.text)
-        if m:
-            for x in json.loads(m.group(1)):
-                try:
-                    ms, v = float(x.get("x")), float(x.get("y"))
-                except (TypeError, ValueError):
-                    continue
-                # 时间戳是北京时间当日 0 点
-                d = datetime.datetime.utcfromtimestamp(ms / 1000.0 + 8 * 3600)
-                if v > 0:
-                    out[d.strftime("%Y%m%d")] = v
+        out, ev = _nav_from_js(r.text)
     except Exception:
         out = {}
     if out:
-        return out
+        return (out, ev) if want_events else out
     for page in range(1, 4):
         try:
             r = requests.get("https://api.fund.eastmoney.com/f10/lsjz",
@@ -183,7 +198,105 @@ def fetch_nav(code):
                 out[d] = v
         if len(rows) < 20:
             break
-    return out
+    return (out, ev) if want_events else out
+
+
+def _js_object(text, var):
+    """从 JS 里抠一个对象字面量（按大括号配对，不吃掉嵌套的 }）。"""
+    import re
+    m = re.search(r"var %s\s*=\s*\{" % re.escape(var), text)
+    if not m:
+        return None
+    i = text.find("{", m.start())
+    depth, j = 0, i
+    while j < len(text):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[i:j + 1])
+                except Exception:
+                    return None
+        j += 1
+    return None
+
+
+def _profile_from_js(text):
+    """基金概况：规模（季报口径，亿元）+ 机构持有比例。
+
+    规模用来看清盘线（连续 60 个工作日低于 5000 万就清盘），持有结构用来看
+    大额赎回风险。两个都在同一份 pingzhongdata 里，不用另接接口。
+    """
+    prof = {}
+    d = _js_object(text, "Data_fluctuationScale")
+    if d:
+        cats = d.get("categories") or []
+        # 注意这里的结构：series 里是「每个报告期一个点」，不是「每条序列一组数」
+        ys = []
+        for x in (d.get("series") or []):
+            try:
+                ys.append(float(x.get("y")))
+            except (TypeError, ValueError):
+                continue
+        if cats and ys:
+            prof["scale"] = ys[-1]
+            prof["scale_date"] = str(cats[-1])
+            prof["scale_prev"] = ys[-2] if len(ys) > 1 else None
+    d = _js_object(text, "Data_assetAllocation")
+    if d:
+        for s in d.get("series") or []:
+            if "现金" in str(s.get("name")):
+                xs = s.get("data") or []
+                if xs:
+                    try:
+                        prof["cash_pct"] = float(xs[-1])
+                    except (TypeError, ValueError):
+                        pass
+    d = _js_object(text, "Data_holderStructure")
+    if d:
+        cats = d.get("categories") or []
+        for s in d.get("series") or []:
+            if "机构" in str(s.get("name")):
+                xs = s.get("data") or []
+                if xs:
+                    try:
+                        prof["inst_pct"] = float(xs[-1])
+                        prof["inst_date"] = str(cats[-1]) if cats else None
+                    except (TypeError, ValueError):
+                        pass
+    return prof
+
+
+def fetch_profile(code):
+    import requests
+    try:
+        url = "https://fund.eastmoney.com/pingzhongdata/%s.js" % code
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0",
+                                       "Referer": "https://fund.eastmoney.com/%s.html" % code},
+                         timeout=30)
+        return _profile_from_js(r.text)
+    except Exception:
+        return {}
+
+
+def profile(code, force=False):
+    """基金规模 / 持有结构。缓存 12 小时，和净值一个节奏。"""
+    with _lock:
+        node = (_load().get("profile", {}).get(code) or {})
+    if not force and _fresh(node, NAV_TTL) and node.get("data"):
+        return dict(node["data"])
+    data = fetch_profile(code)
+    if data:
+        with _lock:
+            cache = _load()
+            cache.setdefault("profile", {})[code] = {"at": time.time(),
+                                                     "data": data}
+            _save(cache)
+        return data
+    with _lock:
+        return dict((_load().get("profile", {}).get(code) or {}).get("data") or {})
 
 
 def _tx_chunk(tx, beg, end):
@@ -229,20 +342,28 @@ def _cached_series(key, code):
     return {k: float(v) for k, v in (node.get("data") or {}).items()}
 
 
-def nav_series(code, force=False):
-    if not force:
-        with _lock:
-            node = (_load()["nav"].get(code) or {})
-        if _fresh(node, NAV_TTL) and node.get("data"):
-            return {k: float(v) for k, v in node["data"].items()}
-    data = fetch_nav(code)
-    if data:
+def nav_series(code, force=False, want_events=False):
+    """单位净值历史。want_events=True 时返回 (净值, 分红/折算记录)。
+
+    老缓存里没有分红记录，第一次要分红记录时会重抓一次（每只基金一次）。
+    """
+    with _lock:
+        node = (_load()["nav"].get(code) or {})
+    hit = bool(_fresh(node, NAV_TTL) and node.get("data"))
+    if hit and want_events and "events" not in node:
+        hit = False       # 补抓：升级前存下来的缓存没有分红记录
+    if hit and not force:
+        data = {k: float(v) for k, v in node["data"].items()}
+        return (data, node.get("events") or {}) if want_events else data
+    nav, ev = fetch_nav(code, want_events=True)
+    if nav:
         with _lock:
             cache = _load()
-            cache["nav"][code] = {"at": time.time(), "data": data}
+            cache["nav"][code] = {"at": time.time(), "data": nav, "events": ev}
             _save(cache)
-        return data
-    return _cached_series("nav", code)
+        return (nav, ev) if want_events else nav
+    data = _cached_series("nav", code)
+    return (data, {}) if want_events else data
 
 
 def px_series(code, force=False):
@@ -377,7 +498,7 @@ def warm(codes):
     """后台预热：把净值和价格历史拉全，之后算历史分位就不用等。"""
     for c in dict.fromkeys(codes or []):
         try:
-            nav_series(c)
+            nav_series(c, want_events=True)
             px_series(c)
         except Exception:
             pass

@@ -375,6 +375,14 @@ def main():
         except Exception as e:
             print("[提示] 策略数据预热未启动：%s: %s" % (type(e).__name__, e))
 
+    # 策略体检：每天收盘后自动记一条日快照。只在「行情日期 == 今天」时记，
+    # 周末节假日不会多出空行；同一天重复跑只覆盖同一条，多跑无害。
+    try:
+        import monitor as monitor_mod
+        monitor_mod.DailyRecorder().start()
+    except Exception as e:
+        print("[提示] 体检日快照未启动：%s: %s" % (type(e).__name__, e))
+
     if not os.path.exists(os.path.join(BASE_DIR, "output", "index.html")):
         print("[提示] 还没生成主页，请先运行 python main.py")
 

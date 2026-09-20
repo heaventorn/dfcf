@@ -44,6 +44,7 @@ def _stamp_of(path):
 def load(force=False):
     """读 strategy.json。改了文件不用重启服务 —— mtime 变了自动重载。"""
     global _cfg, _stamp
+    old = _cfg
     with _lock:
         st = _stamp_of(FILE)
         if _cfg is not None and not force and st == _stamp:
@@ -51,7 +52,51 @@ def load(force=False):
         with open(FILE, encoding="utf-8") as f:
             _cfg = json.load(f)
         _stamp = st
-        return _cfg
+        new = _cfg
+    # 换了配置就留一行日志。改权重是这套系统里最该留痕的动作之一 ——
+    # 半年后回看「什么时候把黄金从 10% 调到 15%」，只有这一处记得住。
+    if old is not None and old is not new:
+        try:
+            d = describe_change(old, new)
+            if d:
+                import journal
+                journal.log("系统", "strategy.json 改了", detail=d, level="act")
+        except Exception:
+            pass
+    return new
+
+
+def describe_change(a, b):
+    """两份配置差在哪，写成人话。只挑有意义的项，最多列 6 条。"""
+    out = []
+    bk = {}
+    for cfg in (a, b):
+        for k, v in (cfg.get("buckets") or {}).items():
+            bk.setdefault(k, v.get("name") or k)
+    sa, sb = a.get("strategies") or {}, b.get("strategies") or {}
+    for sid in sorted(set(sa) | set(sb)):
+        na, nb = sa.get(sid) or {}, sb.get(sid) or {}
+        for k in sorted(set(na.get("weights") or {}) | set(nb.get("weights") or {})):
+            x = float((na.get("weights") or {}).get(k) or 0)
+            y = float((nb.get("weights") or {}).get(k) or 0)
+            if abs(x - y) > 1e-9:
+                out.append("%s 的%s %.2f%% → %.2f%%"
+                           % (nb.get("name") or sid, bk.get(k, k), x * 100, y * 100))
+    for key, path in (("capital", ("account", "capital")),
+                      ("band", ("rebalance", "band")),
+                      ("cut", ("gate", "cut")),
+                      ("months", ("rebalance", "months")),
+                      ("enabled", ("risk_overlay", "enabled"))):
+        x = a
+        y = b
+        for p in path:
+            x = (x or {}).get(p) if isinstance(x, dict) else None
+            y = (y or {}).get(p) if isinstance(y, dict) else None
+        if x != y:
+            out.append("%s %s → %s" % ("/".join(path), x, y))
+    if len(out) > 6:
+        return "；".join(out[:6]) + "；等 %d 项" % (len(out) - 6)
+    return "；".join(out)
 
 
 def reload():
@@ -125,9 +170,19 @@ def active_id():
 def set_active(sid):
     if sid not in strategies():
         raise KeyError("没有这个策略：%s" % sid)
+    old = active_id()
     cfg = load()
     cfg["active"] = sid
     save(cfg)
+    if old != sid:
+        try:
+            import journal
+            journal.log("系统", "切换策略：%s → %s" % (old, sid),
+                        detail="%s → %s" % (get(old).get("name") or old,
+                                            get(sid).get("name") or sid),
+                        sid=sid, level="act")
+        except Exception:
+            pass
     return sid
 
 
@@ -329,7 +384,8 @@ def account_view(with_live_price=True):
         key = p.get("bucket")
         row = {"code": code, "name": p.get("name") or code,
                "shares": shares, "price": price, "cost": float(p.get("cost") or 0),
-               "value": mv, "bucket": key, "px_live": code in px}
+               "value": mv, "bucket": key, "px_live": code in px,
+               "paper": bool(p.get("paper"))}
         rows.append(row)
         if key in by_bucket:
             by_bucket[key] += mv
@@ -347,6 +403,53 @@ def account_view(with_live_price=True):
             "cash_manual": acc["cash_manual"], "buckets": by_bucket,
             "positions": rows, "unclassified": unclassified,
             "capital_manual": acc["capital"]}
+
+
+# ------------------------------------------------------------------ 买卖评级
+
+RATING_TEXT = {"buy": "买入", "hold": "不动", "sell": "卖出"}
+
+
+def rating_of(row, band_value, gate_on=None, risk=None, risk_keys=()):
+    """买卖评级：只有**买入 / 不动 / 卖出**三档。
+
+    刻意不用任何预测涨跌的技术指标。只用三件已经算出来的事实：
+      1. 差额 —— 这个桶离目标还差多少钱（超过 band 才动）
+      2. 溢价 —— 该买的时候，场内价是不是已经贵出格（贵就先别追）
+      3. 闸门 / 分层减仓 —— 风控正开着的时候，风险腿不再加
+
+    好处是每一档都能指着依据说话：给的是「现在该不该动」，不是「以后
+    会涨还是会跌」。评级变了，一定是因为这三样里有一样变了。
+    """
+    dv = float(row.get("delta_value") or 0.0)
+    key = row.get("key")
+    cash = (key == "cash")
+    gate = (row.get("premium_gate") or {}).get("level")
+    prem = (row.get("premium") or {}).get("premium")
+    rs = risk or {}
+    cut = bool(gate_on) or bool(rs.get("active"))   # 闸门或分层减仓在管着
+
+    if band_value and dv > band_value:
+        lvl, why = "buy", "低于目标 ¥%.0f" % dv
+    elif band_value and dv < -band_value:
+        lvl, why = "sell", "超出目标 ¥%.0f" % abs(dv)
+    else:
+        lvl, why = "hold", "差额在 ±¥%.0f 以内" % band_value
+
+    if lvl == "buy" and gate == "block":
+        lvl = "hold"
+        why = ("该买，但场内溢价 %s 超过上限，先别在场内追"
+               % ("%.1f%%" % (prem * 100) if prem is not None else "过高"))
+    if lvl == "buy" and cut and key in risk_keys:
+        lvl = "hold"
+        why = "该买，但闸门/减仓开着，风险腿先不加"
+    if lvl == "sell" and cash:
+        why = "现金超配 ¥%.0f，该投出去" % abs(dv)
+    if lvl == "buy" and cash:
+        why = "现金低于目标 ¥%.0f，等卖出回笼补上" % dv
+    if lvl == "sell" and gate == "block":
+        why += "；溢价高，卖反而划算"
+    return {"level": lvl, "text": RATING_TEXT[lvl], "why": why}
 
 
 def monitor(sid=None, with_live_price=True):
@@ -474,11 +577,29 @@ def monitor(sid=None, with_live_price=True):
     if not view["capital_manual"] and not view["positions"]:
         warnings.append("还没填可投资总额，也没录持仓。先在右上角填一个数。")
 
+    # 建仓以来的盈亏 / 最大回撤：拿到各腿的复权净值现算一遍，不落盘（见
+    # tracker.bucket_stats 的注释）。取不到就留空，不让整张表跟着挂掉。
+    since, since_error = None, None
+    try:
+        import tracker
+        since = tracker.bucket_stats()
+        if not since.get("ok"):
+            since_error, since = since.get("msg"), None
+    except Exception as e:
+        since_error = "%s: %s" % (type(e).__name__, e)
+
+    band_value = bd * cap
+    rk = gate_cfg().get("risk_buckets") or []
+    for r in rows:
+        r["since"] = ((since or {}).get("buckets") or {}).get(r["key"])
+        r["rating"] = rating_of(r, band_value, gate_on, rs, rk)
+
     return {
         "ok": True, "id": sid, "name": get(sid).get("name") or sid,
         "capital": cap, "invested": view["invested"], "cash": view["cash"],
         "capital_manual": view["capital_manual"],
         "band": bd, "gate": gw, "gate_used": gate_on, "risk": rs,
+        "band_value": band_value, "since": since, "since_error": since_error,
         "premium_asof": premium_asof, "premium_warm": premium_warm,
         "premium_error": premium_error,
         "buckets": rows, "unclassified": view["unclassified"],
@@ -486,4 +607,80 @@ def monitor(sid=None, with_live_price=True):
         "alerts": [r for r in rows if r["over_band"]],
         "warnings": warnings,
         "active": active_id(),
+    }
+
+
+# ------------------------------------------------------------------ 建仓说明书
+
+def books(capital=None):
+    """三套策略各自的建仓说明书：设计权重 / 现在目标 / 目标金额 / 标的。
+
+    和 monitor() 的分工要说清楚：
+      monitor 回答「我这套现在偏了多少」—— 只有当前激活的那套说得通，
+              另外两套没有持仓，差额全是假的（都等于目标金额）。
+      这里   回答「这套方案本来该买什么、买多少」—— 所以不碰持仓、不拉
+              行情，三套给的是同一份口径，切页面切到哪套都不变。
+
+    两个权重的区别：
+      设计 = strategy.json 里写的权重，是方案本来的样子。
+      现在 = 设计权重经趋势闸 / 分层减仓压缩之后，今天真正该用的权重。
+             闸门关着、风险正常的时候，两个数一模一样。
+    """
+    if capital is None:
+        capital = account().get("capital") or 0.0
+    cap = float(capital or 0.0)
+    gw = gate_state()
+    rs = risk_state(gw)
+    bd = band()
+    bk = buckets()
+    risk_keys = gate_cfg().get("risk_buckets") or []
+
+    out = []
+    for sid in list_ids():
+        cfg = get(sid)
+        gate_on = gw.get("on") if cfg.get("gate") else None
+        design = target_weights(sid, gate_on=False, risk_state=None)
+        now = target_weights(sid, gate_on=gate_on, risk_state=rs)
+        rows = []
+        for key, bcfg in bk.items():
+            if key.startswith("_"):
+                continue
+            d = float(design.get(key) or 0.0)
+            n = float(now.get(key) or 0.0)
+            pc = bcfg.get("premium") or {}
+            rows.append({
+                "key": key, "name": bcfg.get("name") or key,
+                "group": bcfg.get("group") or "",
+                "note": bcfg.get("note") or "",
+                "instruments": bcfg.get("instruments") or [],
+                "alt": pc.get("alt") or [],
+                "design_w": d, "now_w": n,
+                "design_value": d * cap, "target_value": n * cap,
+            })
+        rows.sort(key=lambda r: (-r["now_w"], -r["design_w"]))
+        out.append({
+            "id": sid, "name": cfg.get("name") or sid,
+            "cat": cfg.get("cat") or "", "risk": cfg.get("risk"),
+            "gate": bool(cfg.get("gate")), "gate_on": gate_on,
+            "rows": rows,
+            "total": sum(r["target_value"] for r in rows),
+            "risk_w": sum(r["now_w"] for r in rows if r["key"] in risk_keys),
+        })
+
+    # 页面按「稳健 → 均衡 → 进取」排。list_ids() 是按 risk 数值排的，
+    # 那个顺序是给下拉框用的，拿来当说明书目录会颠三倒四。
+    order = {"稳健": 0, "均衡": 1, "进取": 2}
+    out.sort(key=lambda b: (order.get(b["cat"], 9), b["id"]))
+
+    return {
+        "ok": True, "capital": cap, "band": bd, "band_value": bd * cap,
+        "gate": {"ok": gw.get("ok"), "on": gw.get("on"), "date": gw.get("date"),
+                 "gap": gw.get("gap"), "window": gw.get("window"),
+                 "index": gw.get("index"), "cut": gw.get("cut")},
+        "risk": {"enabled": rs.get("enabled"), "active": rs.get("active"),
+                 "multiplier": rs.get("multiplier"),
+                 "summary": rs.get("summary")},
+        "risk_keys": risk_keys,
+        "books": out,
+        "asof": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
