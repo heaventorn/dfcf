@@ -1,103 +1,68 @@
 # -*- coding: utf-8 -*-
-"""双密码验证：手动输入访问密码 + 自动加载本地 pwd.key 的强密码。
-校验 Argon2("手动密码 + 文件强密码") 是否匹配内置哈希（Argon2id, 16MB 低内存档）。
-pwd.key 仅存本地、不上传仓库；内置哈希为 Argon2 自含盐哈希，无明文。返回 0=通过 1=未通过。"""
+"""启动身份验证：解锁本地保险库，然后启动主程序。
+
+校验规则（v3.3 起）：
+    密码 + data/pwd.key  --Argon2id-->  KEK  --解开 data/keyring.json-->  数据密钥
+
+数据密钥只通过环境变量交给子进程，不落盘；程序退出就没了。
+第一次运行（还没有 keyring.json）时会顺手把现存明文隐私文件加密成 *.enc。
+
+用法：
+    python auth_check.py                # 校验通过后自动启动 main.py
+    python auth_check.py --check-only   # 只校验密码，不启动程序
+    python auth_check.py --run strategy.py
+
+返回 0=通过 1=未通过。
+"""
+
+import argparse
 import os
+import subprocess
 import sys
-import tkinter as tk
 
-try:
-    from argon2 import PasswordHasher
-    from argon2.exceptions import VerifyMismatchError
-    _ARGON2_OK = True
-except Exception:
-    _ARGON2_OK = False
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
-# Argon2id 组合哈希 = Argon2("0762" + 强密码)，程序外一次性生成（16MB 内存档）
-ARGON2_HASH = "$argon2id$v=19$m=16384,t=2,p=1$XRM95kjRmIq0w1TQ82qupw$bKwFctLoRt6Ad1VxBCdiLS0HMqqqo8yEKFImUzJmVFQ"
-
-if _ARGON2_OK:
-    PH = PasswordHasher(time_cost=2, memory_cost=16384, parallelism=1)
-else:
-    PH = None
+import secure_store
 
 
-def _load_key():
-    """读取本地 pwd.key 中的强密码明文（该文件不入库，统一放 data/）"""
-    base = os.path.dirname(os.path.abspath(__file__))
-    try:
-        import config
-        cands = [config.PWD_KEY_FILE, os.path.join(base, "pwd.key")]
-    except Exception:
-        cands = [os.path.join(base, "pwd.key")]
-    for p in cands:
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            continue
-    return ""
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="DFCF 启动身份验证")
+    ap.add_argument("--check-only", action="store_true", help="只校验密码，不启动程序")
+    ap.add_argument("--run", default="main.py", help="校验通过后启动的脚本")
+    ap.add_argument("rest", nargs="*", help="传给那个脚本的参数")
+    args = ap.parse_args(argv)
 
-
-def _verify(pwd):
-    """Argon2 校验；密码不匹配返回 False"""
-    if not _ARGON2_OK:
-        return False
-    try:
-        PH.verify(ARGON2_HASH, pwd)
-        return True
-    except VerifyMismatchError:
-        return False
-    except Exception:
-        return False
-
-
-def main():
-    if not _ARGON2_OK:
-        print("错误：缺少 argon2-cffi 库。请先执行: pip install argon2-cffi")
+    if not secure_store.deps_ok():
+        print(secure_store.deps_hint())
         return 1
 
-    key = _load_key()
-    if not key:
-        print("错误：找不到本地密钥文件 data/pwd.key，程序拒绝启动。")
+    key = secure_store.unlock_interactive()
+    if key is None:
+        print("[!] 身份验证未通过，程序退出。")
         return 1
 
-    root = tk.Tk()
-    root.title("身份验证")
-    root.geometry("320x150")
-    root.resizable(False, False)
-    root.eval("tk::PlaceWindow . center")
+    if args.check_only:
+        print("[OK] 身份验证通过，保险库已解锁。")
+        return 0
 
-    tk.Label(root, text="请输入访问密码", font=("微软雅黑", 11)).pack(pady=(22, 6))
-    entry = tk.Entry(root, show="*", font=("微软雅黑", 13), width=18, justify="center")
-    entry.pack(pady=4)
-    entry.focus_set()
+    target = os.path.join(BASE_DIR, args.run)
+    if not os.path.isfile(target):
+        print("[!] 找不到要启动的脚本：", target)
+        return 1
 
-    state = {"ok": False}
-    err_label = None
-
-    def on_ok():
-        nonlocal err_label
-        if _verify(entry.get() + key):
-            state["ok"] = True
-            root.destroy()
-        else:
-            if err_label is None:
-                err_label = tk.Label(root, text="密码错误", fg="red", font=("微软雅黑", 9))
-                err_label.pack()
-
-    def on_cancel():
-        root.destroy()
-
-    bf = tk.Frame(root)
-    bf.pack(pady=12)
-    tk.Button(bf, text="确定", width=8, command=on_ok, default="active").pack(side="left", padx=10)
-    tk.Button(bf, text="取消", width=8, command=on_cancel).pack(side="left", padx=10)
-    entry.bind("<Return>", lambda e: on_ok())
-    entry.bind("<Escape>", lambda e: on_cancel())
-    root.protocol("WM_DELETE_WINDOW", on_cancel)
-    root.mainloop()
-    return 0 if state["ok"] else 1
+    env = os.environ.copy()
+    env[secure_store.ENV_KEY] = secure_store.export_key(key)
+    cmd = [sys.executable, target] + list(args.rest)
+    print("[OK] 身份验证通过，启动 %s ..." % args.run)
+    try:
+        return subprocess.run(cmd, env=env).returncode
+    except KeyboardInterrupt:
+        return 1
+    except OSError as e:
+        print("[!] 启动失败：%s" % e)
+        return 1
 
 
 if __name__ == "__main__":

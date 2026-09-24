@@ -15,7 +15,8 @@ if errorlevel 1 (
 )
 echo [OK] Auth passed. Collecting market data...
 echo.
-py -3.12 main.py
+echo   (auth_check.py has unlocked the vault and started main.py)
+echo.
 echo.
 echo ============================================================
 echo   Done. Dashboard URL:

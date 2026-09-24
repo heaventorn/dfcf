@@ -7,6 +7,91 @@
 ---
 
 
+## v3.6.0 · 隐私文件加密（本地保险库：Argon2id + AES-256-GCM）
+
+这一版修的是「电脑被人碰到 / 整个文件夹被人拷走」时的隐私问题。
+
+**毛病**：`data/` 和 `output/` 里的个人记录以前全是**明文** —— 持仓、自选、策略蓝图、
+`cookies.json`（等于账号）、`secrets.json`（API Key），加上现金流台账、操作日志、
+盈亏追踪、体检结果，谁拿到这个文件夹都能直接打开看。启动口令也只是 `auth_check.py`
+里一个**写死的 Argon2 哈希**，参数 `m=16384, t=2, p=1`（16MB 内存），在显卡面前
+不算门槛，而且哈希写在源码里，等于把锁和钥匙挂在同一个门把手上。
+
+**改法**：新增 `secure_store.py`，两层密钥结构：
+
+```
+密码 + data/pwd.key  --Argon2id-->  KEK  --解开 data/keyring.json-->  数据密钥 DEK
+DEK + 每个文件独立随机 nonce  --AES-256-GCM-->  文件密文（原名 + .enc）
+```
+
+**本版重点**
+
+- **密钥派生升级**：Argon2id 从 `m=16384, t=2, p=1` 提到 **`m=65536 (64MB), t=3, p=4`**；
+  实测解锁一次 0.055~0.063 秒，只在启动时算，日常读文件不再碰它
+- **源码里不再有任何可离线爆破的哈希**：旧哈希只用于把老安装**一次性迁移**过来
+- **换密码不重加密文件**：`rekey` 只重新包一次 DEK（毫秒级），几百个密文一个都不动
+- **每个文件独立 nonce + 文件名绑进 AAD**：文件被对调、替换或篡改会直接解密失败
+- **密钥不落盘**：只在内存和子进程环境变量 `DFCF_VAULT_KEY` 里，程序退出即消失；
+  子进程（`main.py` 等）不用再问一次密码
+- **明文自动迁移**：读到残留明文就顺手加密写回（明文先覆写一遍再删），所以手工丢进去的
+  明文不会赖在磁盘上
+- **加密范围**：`data/` 下所有 `*.json`（`keyring.json` / `pwd.key` 是钥匙，除外）+
+  `output/` 里的 `ledger.json` / `journal.jsonl` / `journal_state.json` /
+  `plan_history.jsonl` / `track.json` / `track.bak.json` / `monitor.json` / `holding_eval.json`
+- **故意不加密**：`output/index.html`、`latest_market.json`、`history.db` 和各类缓存 ——
+  浏览器和 SQLite 要直接读，而且每次运行都会重建
+- **防呆**：`keyring.json` 丢了但磁盘上还有 `*.enc` 时**拒绝新建保险库**
+  （否则会生成一把新钥匙，老数据永久锁死），要求先从备份 `restore`
+
+**新增文件**
+
+| 文件 | 说明 |
+| --- | --- |
+| `secure_store.py` | 保险库本体：密钥派生 / 加解密 / 明文迁移 / 备份恢复 / 交互菜单 |
+| `加密工具.bat` | Windows 双击入口，对着 `secure_store.py` 的数字菜单 |
+
+**主要修改**
+
+- `auth_check.py` 重写：从「比对写死的哈希」改成「解锁保险库 → 把密钥用环境变量交给子进程」；
+  新增 `--check-only`（只验密码）与 `--run <脚本>`；老的 `_verify` 函数已不存在
+- `config.py` 新增 `VAULT_KEYRING_FILE` / `SECURE_FILES`；`ensure_data_dir()` 判空改用
+  `_present()` —— 同时看明文和 `*.enc`，否则每次启动都会用模板把已加密的持仓盖掉
+- 所有读写个人数据的模块改成走加密 I/O：`login.py` / `sources.py` / `portfolio.py` /
+  `position_manager.py` / `strategy.py` / `llm.py` / `rebalance.py` / `journal.py` /
+  `ledger.py` / `monitor.py` / `tracker.py` / `holding_eval.py` / `main.py`
+- `requirements.txt` 新增 `cryptography>=41.0`
+- `启动爬虫.bat` 去掉了重复调用 `main.py`（现在由 `auth_check.py` 拉起）
+
+**升级提示**
+
+- 完全不用手工迁移：第一次用新版本的启动脚本会问一次「旧密码」，验过之后自动建库并把
+  现存明文全加密成 `*.enc`。**密码不用改**，还是原来那个
+- 升完**强烈建议做一次备份**：`python secure_store.py backup D:\备份\dfcf-vault.json`
+  （或双击 `加密工具.bat` 选 5）。它等于一把备用钥匙，请放到离线位置
+  （U 盘 / 密码管理器）—— `data/pwd.key` 和它一起丢，数据就再也解不开了
+- 换机器：把 `data/`（含 `keyring.json` 和 `pwd.key`）一起带过去，或者在新机器上
+  `python secure_store.py restore <备份文件>`
+
+**性能**（实测，临时副本）
+
+- 解锁（Argon2id 64MB）一次约 0.055 秒，只在启动时发生
+- 解密读一次隐私文件约 0.10 毫秒，加密写一次约 1.1 毫秒
+- 日志追加是「整份读回 → 追一行 → 整份加密写回」，实测约 1.4 毫秒/次（每轮只有几笔，无感）
+
+**同一次推送里的两处小修**
+
+- **数据源：东财直连降级为末位备选**。实测本机网络请求 `push2.eastmoney.com` /
+  `push2delay.eastmoney.com` 的 `/api/...` 接口会被服务器直接断连（真实浏览器打开
+  同一个接口同样是 `ERR_EMPTY_RESPONSE`），而 `push2ex`（涨跌停池）、新浪、腾讯都正常 ——
+  属于线路 / IP 级拦截，不是代码问题。新增开关 `config.EM_FIRST`（默认 `False`），
+  把东财一族排到各取数项的末尾：14 项数据照旧全齐，一轮取数耗时 **20.3 秒 → 13.0 秒**，
+  健康报告里不再出现失败源。哪天线路恢复，把 `EM_FIRST` 改成 `True` 即回到原优先级
+- `history.py`：修历史表格数字串行 —— 两段数字之间缺分隔，会显示成
+  `1038/  435838/       4`，现在是 `1038/4358        38/4`
+
+---
+
+
 ## v3.5.0 · 数据目录收敛（`data/` 一个目录装完，凭据和持仓彻底离开仓库）
 
 这一版不添功能，修的是一个会真出事的结构问题。

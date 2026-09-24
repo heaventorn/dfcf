@@ -18,12 +18,13 @@
 - **新闻可跳原文**：新闻栏与详情面板里的标题都是链接（新窗口打开原站），六个信源在抓取时都保留了原文地址；点条目的**其余位置**仍是原有的「飞向地球光点 + 展开详情」，互不干扰
 - **我的自选**（主页右上方窗口）：自己维护的标的清单，分 **ETF / 股票 / 其他** 三组（存 `data/watchlist.json`）。**只跟行情——不记成本、不算盈亏**（那是「我的持仓」的事）。在持仓管理页 `http://127.0.0.1:8765` 的「📌 自选管理」标签填个代码就能加入；场内 ETF/股票取实时价，场外基金取净值（带净值日），国债逆回购显示的是年化利率
 - **个股终端**（`stock.py` + `stock.html`）：主页里点持仓/自选任意一行 → **同一个窗口**进入个股页（详细报价 / 五档盘口 / 分时含均价 / 日K / 月K / 均线·BOLL 指标切换 / 量能 / MACD），返回键或 Esc 回主页。后台按 **3.5s / 60s / 300s** 分档刷新，**同一只票合并请求**（多开标签页也只打一次上游），**收盘、午休、周末自动停刷**，页面关掉 60 秒后连后台也不再为它抓数
+- **隐私文件加密**（`secure_store.py`）：持仓、自选、策略蓝图、Cookie、API Key 和 output/ 里的台账·日志·追踪，落盘一律是密文（`文件名.enc`）；密钥由「你输入的密码 + 本机密钥文件 `data/pwd.key`」经 Argon2id 派生，源码里不留可离线爆破的哈希。换密码不用重加密文件
 
 ## 环境要求
 
 - Windows / macOS / Linux
 - Python 3.12（实测 3.12.10；3.10+ 基本可用）
-- 依赖：见 `requirements.txt`（`requests`、`pandas`、`numpy`、`playwright`、`argon2-cffi`；`Pillow` 可选，装了会给主页内嵌贴图降采样）
+- 依赖：见 `requirements.txt`（`requests`、`pandas`、`numpy`、`playwright`、`argon2-cffi`、`cryptography`；`Pillow` 可选，装了会给主页内嵌贴图降采样）
 
 ## 安装
 
@@ -64,6 +65,11 @@ python history.py --days 30 --field breadth_up   # 某指标时间序列
 首次运行 `python main.py` 会弹出浏览器窗口，用「东方财富 App」扫一扫登录页面左侧二维码即可。
 登录成功后 Cookie 保存到 `data/cookies.json`，下次运行自动复用，无需重复扫码。
 
+> 直接跑 `python main.py` 也会**先要一次访问密码**（隐私文件是密文，没有密钥读不出来）。
+> 密码就在你启动它的那个 CMD 窗口里输 —— 每敲一个键回一个 `*`，输完回车即可。
+> 平时更推荐双击 `启动爬虫.bat`：它的第一步就是解锁保险库，然后才拉起 `main.py`。
+> 详见下面「隐私文件加密」一节。
+
 ### 手动粘贴 Cookie（备用登录方式）
 
 如果扫码登录不方便，可手动粘贴：
@@ -80,7 +86,7 @@ python -c "import login; login.manual_login()"
 
 | 目录 | 放什么 | 入库吗 | 丢了怎么办 |
 | --- | --- | --- | --- |
-| `data/` | **你手动维护的数据 + 凭据**：`positions.json`（持仓）、`watchlist.json`（自选）、`strategy.json`（策略蓝图）、`cookies.json`、`pwd.key`、`secrets.json` | **不入库**（`.gitignore` 排除整个目录） | 找不回来，必须自己留着 |
+| `data/` | **你手动维护的数据 + 凭据**：`positions.json`（持仓）、`watchlist.json`（自选）、`strategy.json`（策略蓝图）、`cookies.json`、`secrets.json`，以及钥匙 `pwd.key` / `keyring.json` | **不入库**（`.gitignore` 排除整个目录） | 找不回来，必须自己留着 |
 | `output/` | 程序生成的缓存与报告：主页、历史库、各类行情缓存、追踪账本 | 不入库 | 删掉重跑即可 |
 
 - 路径常量集中在 `config.py`（`POS_FILE` / `WATCH_FILE` / `STRATEGY_FILE` / `COOKIE_FILE` / `PWD_KEY_FILE` / `SECRETS_FILE`），
@@ -89,6 +95,61 @@ python -c "import login; login.manual_login()"
   `positions.json` / `watchlist.json` / `strategy.json` 时，按 `data_templates/*.example.json` 生成。
   所以新机器克隆下来直接 `python main.py` 就能跑，不用手工建文件。
 - `data/` 里的文件**不会**通过主页的本地服务暴露出去（`live_server.py` 对 `/data/` 一律回 403）。
+- **落盘形态是密文**：`data/` 下所有 `*.json`（钥匙文件除外）和 `output/` 里的台账·日志·
+  追踪·体检，落盘都是 `文件名.enc`；明文只在内存里。细节见下一节。
+
+## 隐私文件加密（本地保险库）
+
+目的很直白：**就算别人把整个项目文件夹拷走，也看不到你的持仓和账号**。
+
+```
+密码 + data/pwd.key  --Argon2id-->  KEK  --解开 data/keyring.json-->  数据密钥 DEK
+DEK + 每个文件独立随机 nonce  --AES-256-GCM-->  文件密文（原名 + .enc）
+```
+
+- **两个因素**：`data/pwd.key` 是随机生成的本机密钥文件，**不放在源码里**；只有「它 + 你记得的密码」合起来才能解出数据密钥。所以源码可以随便公开，光有代码推不出密钥
+- **抗爆破**：Argon2id 参数 `m=64MB, t=3, p=4`（旧版是 16MB / 2 轮）；想硬猜密码，每试一次都要付 64MB 内存 + 3 轮的开销
+- **性能无感**：慢哈希只在**启动解锁时算一次**（约 0.05 秒），之后每个文件都是纯 AES-GCM，读约 0.1 毫秒、写约 1 毫秒
+- **换密码很轻**：只重新包一次数据密钥，几百个密文文件一个都不用动
+- **防篡改**：每个文件独立 nonce，并把文件路径绑进 AAD —— 文件被对调或改过会直接解密失败，不会悄悄给你一份错数据
+- **钥匙只在这一台机器这一段进程里**：数据密钥只在内存和子进程环境变量里，程序退出就没了
+
+### 怎么用
+
+日常完全不用管，正常启动即可：
+
+```bash
+启动爬虫.bat            # Windows 双击：先在 CMD 窗口里输密码解锁，再跑采集
+python auth_check.py   # 跨平台等价写法
+```
+
+第一次会请你**设一个访问密码**（至少 6 位，建议 12 位以上或一句好记的长口令），并自动把现存明文全部加密。
+之后的每次启动输这个密码即可（就在当前 CMD 窗口里敲，跟填命令行一样）；`data/pwd.key` 和密码**两样都要留好**。
+
+> 输密码时每敲一个键会回一个 `*`，看得见才算数。问你密码之前，程序会**自动把输入法切成英文键盘**
+> （中文输入法开着的时候，字母会被它吃进候选框，程序一个字符都收不到），答完再切回你原来那个，
+> 所以不用手动按 `Shift`。
+> 万一还是敲不进（比如键盘焦点被别的窗口抢走），等 25 秒它会自己改用弹窗让你输，不会把你堵在门口。
+
+要单独操作保险库（改密码 / 备份 / 看状态 / 手动改某个加密文件）就双击 **`加密工具.bat`**，
+它会给出一个数字菜单：
+
+```
+python secure_store.py status               # 看哪些文件已加密
+python secure_store.py rekey                # 换密码（不重加密文件）
+python secure_store.py backup D:\备份\dfcf-vault.json   # 导出备份（强烈建议做一次）
+python secure_store.py restore D:\备份\dfcf-vault.json  # 换机器 / 丢了 pwd.key 时恢复
+python secure_store.py edit strategy.json   # 用记事本改加密文件，存回自动加密
+```
+
+### 一定别忘的两件事
+
+1. **做一次备份**：`python secure_store.py backup <路径>` 会把钥匙串和 `pwd.key` 打成一个文件。
+   它等于一把备用钥匙，请放到**离线位置**（U 盘 / 密码管理器）。`data/pwd.key` 丢了，
+   光有密码也解不开数据，只能靠这份备份救回来。
+2. **别把整个项目目录同步到网盘 / 公开仓库**：`output/index.html`、`latest_market.json`、
+   `history.db` 为了让浏览器和 SQLite 直接读，**不在加密范围**，内容里却含你的持仓；
+   它们每次运行都会重建，不需要备份。
 
 ## 输出
 
@@ -137,7 +198,13 @@ dfcf-main/
 ├── stock.html               # 个股终端页面（分时 / 日K / 月K + 指标切换 + 五档盘口）
 ├── live_server.py           # 常驻服务（127.0.0.1:8766：主页静态发布 + /api/news + /api/stock + /stock 个股页）
 ├── position_manager.py      # 持仓 / 自选管理本地服务（127.0.0.1:8765）
-├── data/                    # 【本地数据，整目录不入库】持仓 / 自选 / 策略蓝图 / cookies / pwd.key / secrets.json
+├── auth_check.py            # 启动身份验证：解锁保险库 → 用环境变量把密钥交给 main.py
+├── secure_store.py          # 隐私文件加密（Argon2id + AES-256-GCM）与保险库小工具；python secure_store.py 交互菜单
+├── 加密工具.bat             # Windows 双击入口，对着 secure_store.py 的菜单
+├── data/                    # 【本地数据，整目录不入库】落盘一律是密文（*.enc），明文只在内存
+│   ├── keyring.json         #   钥匙串：用密码 + pwd.key 派生出的密钥包住数据密钥
+│   ├── pwd.key              #   本机随机密钥文件（第二把钥匙，丢了要从备份恢复）
+│   └── *.json.enc           #   positions / watchlist / strategy / cookies / secrets 的密文
 ├── data_templates/          # data/ 的种子模板（*.example.json），新机器克隆后自动生成 data/
 ├── strategy.html            # 策略执行台页面（配置对照 / 买卖计划 / 回测 / 模型分析）
 ├── strategy.py              # 策略层（目标权重 / 趋势闸 / 实际持仓对照）
@@ -389,12 +456,23 @@ $env:DEEPSEEK_API_KEY = "sk-..."
   `启动爬虫.bat`；个股页需要 8766 服务在跑（`/api/stock`）。
 - **个股页某块显示「—」**：那一块数据源降级了，看 `/api/stock/health` 的 `errors`
   与 `/api/health`；逆回购 / 场外基金本身没有分时与 K 线，主页里也不给入口。
+- **忘了访问密码 / 丢了 `data/pwd.key`**：只能靠备份恢复
+  （`python secure_store.py restore <备份文件>`）。两样都没有就解不开了 ——
+  所以建完保险库**先做一次备份**，见「隐私文件加密」一节。
+- **保险库提示找不到 `keyring.json`，但磁盘上有 `*.enc`**：**别选「新建保险库」**
+  （会生成新钥匙、老数据永久锁死，工具本身也会拦住），正确做法是从备份 `restore`。
 
 ## 版本与近期变更
 
-当前版本 **v3.4.0**：四块功能（主页 3D 地球指挥台 / 个股终端 / 持仓·自选管理 / 策略执行台）
+当前版本 **v3.6.0**：四块功能（主页 3D 地球指挥台 / 个股终端 / 持仓·自选管理 / 策略执行台）
 加一条数据链，常驻服务是**一个进程托管两个端口**（8766 主页·新闻·个股·策略台；8765 持仓自选）。
 
+- **v3.6.0 隐私文件加密**：新增 `secure_store.py`（本地保险库）与 `加密工具.bat`；
+  个人数据落盘全部改成密文（`*.enc`）—— 两层密钥（密码 + `data/pwd.key` 经 Argon2id 派生
+  KEK，解开 `data/keyring.json` 里的数据密钥 DEK，再用 AES-256-GCM 加密文件）；
+  密钥派生参数提到 64MB / 3 轮 / 4 线程，源码里不再留可离线爆破的哈希；
+  换密码只重包一次 DEK，密文文件不用动；`auth_check.py` 改写成「解锁保险库 → 把密钥交给
+  子进程」；详见 CHANGELOG 的 v3.6.0 与「隐私文件加密」一节
 - **v3.4.0 记账与体检**：新增 `ledger.py`（现金流台账）、`journal.py`（事件日志）、
   `monitor.py`（日 / 周 / 月 / 季四档体检 + A1·A2·A3 三条报警线）、`holding_eval.py`
   （持仓评估：跟踪误差 / 流动性 / 规模 / 溢价）；策略台新增「台账 · 日志」与

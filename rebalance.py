@@ -15,6 +15,7 @@ import json
 import os
 
 import config
+import secure_store
 import strategy
 
 MIN_TRADE = 500.0  # 计划金额小于这个数就不列出来，免得一堆没意义的碎单
@@ -363,15 +364,14 @@ def apply(rows, sid=None, note="", paper=None, to_ledger=True):
                               "note": note or ("执行计划 %s" % sid)})
 
     data["positions"] = pos
-    with open(_positions_file(), "w", encoding="utf-8") as f:
+    with secure_store.open_writer(_positions_file()) as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
     rec = {"at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
            "strategy": sid, "note": note, "trades": done}
     try:
         os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-        with open(_log_file(), "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        secure_store.append_line(_log_file(), json.dumps(rec, ensure_ascii=False))
     except Exception:
         pass
 
@@ -421,7 +421,7 @@ def mark_real(note=""):
             p.pop("paper", None)
             n_pos += 1
     if n_pos:
-        with open(_positions_file(), "w", encoding="utf-8") as f:
+        with secure_store.open_writer(_positions_file()) as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     n_led = 0
@@ -556,7 +556,7 @@ def seed(sid=None, capital=None, force=False, note="", paper=True, dry=False):
                     "cost": round(l["price"], 4), "shares": int(l["shares"]),
                     "bucket": l["key"], "note": tag,
                     "paper": bool(paper), "at": stamp})
-    with open(_positions_file(), "w", encoding="utf-8") as f:
+    with secure_store.open_writer(_positions_file()) as f:
         json.dump({"positions": pos}, f, ensure_ascii=False, indent=2)
     out["positions"] = len(pos)
 
@@ -605,7 +605,7 @@ def seed(sid=None, capital=None, force=False, note="", paper=True, dry=False):
 
 def history(limit=50):
     try:
-        with open(_log_file(), encoding="utf-8") as f:
+        with secure_store.open_reader(_log_file()) as f:
             lines = [l for l in f if l.strip()]
     except Exception:
         return []

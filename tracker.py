@@ -35,6 +35,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 
 import config
+import secure_store
 import strategy
 
 FILE = os.path.join(config.OUTPUT_DIR, "track.json")
@@ -62,19 +63,17 @@ def _days(a, b):
 
 def _load(path, default):
     try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        return secure_store.read_json(path, default)
     except Exception:
         return default
 
 
 def _dump(path, obj):
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        secure_store.write_json(path, obj, indent=2)
     except Exception:
         pass
 

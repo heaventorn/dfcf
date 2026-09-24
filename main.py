@@ -227,7 +227,25 @@ def _open_page(home_path, serve_ok):
         print(f"[提示] 自动打开主页失败（{e}），请手动访问 {PAGE_URL}")
 
 
+def _ensure_vault():
+    """解锁本地保险库：隐私文件都是密文，没有密钥读不出来。"""
+    try:
+        import secure_store
+    except Exception as e:
+        print("[提示] 加密模块加载失败：%s" % e)
+        return True
+    try:
+        if secure_store.unlock_interactive() is not None:
+            return True
+    except Exception as e:
+        print("[提示] 保险库解锁出错：%s" % e)
+    return False
+
+
 def run(use_login=True, open_browser=True):
+    if not _ensure_vault():
+        print("[!] 保险库未解锁，程序退出。")
+        return None
     print("=" * 60)
     print("  东方财富 · 当日市场信息采集与总结")
     print("=" * 60)
@@ -304,6 +322,10 @@ def main():
     parser.add_argument("--airman-backfill", action="store_true",
                         help="按月末回补空中飞人历史代理序列（供策略回测使用）")
     args = parser.parse_args()
+
+    if not _ensure_vault():
+        print("[!] 保险库未解锁，程序退出。")
+        return 1
 
     if args.login_only:
         import login

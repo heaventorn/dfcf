@@ -6,7 +6,7 @@
 - 分时：当日分钟价格 + 分钟成交量 + 昨收
 - 指标：MA5/10/20/50/60/144、BOLL(20,2)、MACD(12,26,9)
 
-数据源：腾讯行情接口（web.ifzq.gtimg.cn）
+数据源：腾讯行情接口（proxy.finance.qq.com / web.ifzq.gtimg.cn）
 
 绘图不在这里：主页用 lightweight-charts（内联在 home.py），个股页用同一套
 （stock.html）；曾经的 matplotlib「生成 base64 PNG」链路随旧综合报告一起删除，
@@ -49,7 +49,10 @@ def fetch_kline(code="sh000001", n=260, period="day"):
     而不是"这个月的定值"，缓存也要按日失效。
     """
     key_q, key_raw = _PERIOD_KEYS.get(period, _PERIOD_KEYS["day"])
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code},{period},,,{n},qfq"
+    # 2026-09-24 实测：web.ifzq.gtimg.cn/appstock/app/fqkline/get 已一律返回 HTTP 501，
+    # 换到 proxy.finance.qq.com 的同名接口（param 末位仍是 qfq，返回键名保持一致）。
+    url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+           f"?param={code},{period},,,{n},qfq")
     j = _tx_get(url)
     node = j.get("data", {}).get(code, {})
     rows = node.get(key_q) or node.get(key_raw) or []

@@ -14,6 +14,7 @@ import os
 import time
 
 import config
+import secure_store
 
 # 东财独立登录页（点击官网"登录"后跳转到的地址）
 LOGIN_URL = "https://passport2.eastmoney.com/pub/login?backurl=https%3A%2F%2Fwww.eastmoney.com%2F"
@@ -31,7 +32,7 @@ def save_cookies(cookie_list):
     for c in cookie_list:
         if c.get("name") and c.get("value") is not None:
             cj[c["name"]] = c["value"]
-    with open(config.COOKIE_FILE, "w", encoding="utf-8") as f:
+    with secure_store.open_writer(config.COOKIE_FILE) as f:
         json.dump(cj, f, ensure_ascii=False, indent=2)
     return cj
 
@@ -122,7 +123,7 @@ def manual_login():
     if not cj:
         print("未解析到任何 Cookie。")
         return None
-    with open(config.COOKIE_FILE, "w", encoding="utf-8") as f:
+    with secure_store.open_writer(config.COOKIE_FILE) as f:
         json.dump(cj, f, ensure_ascii=False, indent=2)
     print("✓ Cookie 已保存到", config.COOKIE_FILE)
     return cj
@@ -130,9 +131,9 @@ def manual_login():
 
 def ensure_login():
     """确保存在有效 Cookie：已有则直接使用，否则引导登录。"""
-    if os.path.exists(config.COOKIE_FILE):
+    if secure_store.exists(config.COOKIE_FILE):
         try:
-            with open(config.COOKIE_FILE, "r", encoding="utf-8") as f:
+            with secure_store.open_reader(config.COOKIE_FILE) as f:
                 cj = json.load(f)
             if cj:
                 print("✓ 检测到已保存的登录会话，直接使用。")

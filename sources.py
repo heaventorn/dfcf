@@ -13,8 +13,11 @@
   emdelay  东方财富 push2delay（延迟镜像，返回格式与 push2 完全一致，主源被限流时顶上）
   push2ex  东方财富 涨停/跌停池（无镜像）
   newsapi  东方财富 7x24 快讯
+  emnews   东方财富 快讯备用线路（np-listapi，与 newsapi 不同接口）
   tx       腾讯行情（qt.gtimg.cn / web.ifzq.gtimg.cn / proxy.finance.qq.com）
   sina     新浪财经（hq.sinajs.cn / Market_Center / getKLineData / 7x24 直播）
+  sinaroll 新浪财经滚动新闻（feed.mix.sina.com.cn，与 sina 的 7x24 不同接口）
+  ths      同花顺（data.10jqka.com.cn 涨停池）
   fund10   天天基金 F10（分红送配）
 
 对外公开函数（供 collector / dividend 调用，返回结构与原单源版本一致）：
@@ -36,6 +39,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import config
+import secure_store
 from utils import to_float as _to_float
 
 
@@ -130,6 +134,7 @@ _emdelay_sess = _mk_session("https://quote.eastmoney.com/")
 _push2ex_sess = _mk_session("https://quote.eastmoney.com/")
 _tx_sess = _mk_session()
 _sina_sess = _mk_session("https://finance.sina.com.cn/")
+_ths_sess = _mk_session("https://data.10jqka.com.cn/")
 _fund_sess = _mk_session("https://fundf10.eastmoney.com/")
 _news_sess = _mk_session()
 
@@ -143,7 +148,7 @@ def load_cookies():
     `_cookie_jar` 备用，将来真出现需要登录态的接口，再从这个 jar 往对应会话注入。
     """
     try:
-        with open(config.COOKIE_FILE, "r", encoding="utf-8") as f:
+        with secure_store.open_reader(config.COOKIE_FILE) as f:
             ck = json.load(f)
         _cookie_jar.clear()
         _cookie_jar.update(ck)
@@ -350,6 +355,27 @@ def _record_defect(key, name, exc):
 
 # ================================================================ 多源取数统一入口
 
+# 东财直连一族（push2 / push2delay）。注意不含 push2ex ——
+# 涨停/跌停池只有它一家有官方池，必须继续排第一。
+_EM_FAMILY = ("em", "emdelay", "em_pages", "emdelay_pages")
+
+
+def _em_last(providers):
+    """把东财直连源挪到列表末尾（config.EM_FIRST=False 时）。
+
+    2026-09-24 实测：本机网络请求 push2.eastmoney.com / push2delay.eastmoney.com
+    的 /api/... 接口会被服务器立刻断连（真实浏览器同样 ERR_EMPTY_RESPONSE），
+    而同一个域名的根路径、push2ex、新浪、腾讯都正常 —— 属于线路/IP 级拦截。
+    它排第一时，每次取数都要先在它身上白等一两秒再切源；挪到末尾后，
+    正常的源直接命中，东财只在其它源全挂时兜底。
+    """
+    if getattr(config, "EM_FIRST", True):
+        return list(providers)
+    head = [p for p in providers if p[0] not in _EM_FAMILY]
+    tail = [p for p in providers if p[0] in _EM_FAMILY]
+    return head + tail
+
+
 def fetch(key, providers, validate=None, rounds=2):
     """
     按优先级依次尝试多个来源，命中「数据异常」自动切换；全部失败可整体重试。
@@ -367,6 +393,7 @@ def fetch(key, providers, validate=None, rounds=2):
         过去这类异常被 `except Exception` 静默当成「来源故障」吞掉，bug 会被
         「切源成功」掩盖，数据恒空却查不出原因。
     """
+    providers = _em_last(providers)
     for rnd in range(rounds):
         for name, fn in providers:
             if not _usable(name):
@@ -526,6 +553,42 @@ def _em_breadth(host):
     return {"total": len(pct_list), "up": up, "down": down, "flat": len(pct_list) - up - down}
 
 
+def _em_breadth_fast(host):
+    """东财全市场涨跌家数（快线：**一条请求**）。
+
+    原理：市场指数行情里 f104/f105/f106 就是该指数的「涨/跌/平家数」，而
+    上证指数 / 深证成指 / 北证50 分别对应沪市 / 深市 / 北交所三个市场。
+    实测 2026-09-24 11:49：上证 473/1804/78、深证 573/2276/83、北证50 36/309/2，
+    三市相加 5634 家即全市场 —— 一次请求替代原来约 56 次翻页。
+
+    这也是把 IP 从限流里救出来的关键：原实现每轮打 56 次 clist，
+    正是触发东财「clist/get 直接掐连接」的主要原因，而 ulist 不受影响。
+
+    注意：BREADTH_SECIDS 只登记市场指数，不要掺沪深300 / 科创50 ——
+    那类成分指数返回的是成分股家数（实测沪深300 返回 298），会把总数算小。
+    """
+    secids = ",".join(s for s, _ in config.BREADTH_SECIDS)
+    data = _req_json(_em_sess if host == _EM else _emdelay_sess,
+                     f"https://{host}/api/qt/ulist.np/get",
+                     params={"fltt": 2, "invt": 2, "fields": config.BREADTH_FIELDS,
+                             "secids": secids})
+    diff = _em_diff(data)
+    if len(diff) < len(config.BREADTH_SECIDS):
+        raise _empty(f"涨跌家数返回不足({len(diff)}/{len(config.BREADTH_SECIDS)})")
+    up = down = flat = 0
+    for x in diff:
+        u, d, p = _to_float(x.get("f104")), _to_float(x.get("f105")), _to_float(x.get("f106"))
+        if u is None or d is None:
+            raise _empty("涨跌家数字段缺失")
+        up += int(u)
+        down += int(d)
+        flat += int(p or 0)
+    total = up + down + flat
+    if total < 1000:      # 全市场不可能少于 1000 家，低于这个数一定是异常数据
+        raise _empty(f"涨跌家数异常(合计 {total})")
+    return {"total": total, "up": up, "down": down, "flat": flat}
+
+
 def _em_limit_pool(kind):
     """东财涨停/跌停池（唯一来源）。"""
     url = ("https://push2ex.eastmoney.com/getTopicZTPool" if kind == "zt"
@@ -548,6 +611,122 @@ def _em_limit_pool(kind):
     return {"count": d.get("tc", len(items)), "items": items}
 
 
+# ---- 涨停池的备用线路 ----
+# 东财 push2ex 是唯一「官方」涨停/跌停池，没有镜像域。实测 2026-09-24：
+#   同花顺 data.10jqka.com.cn/dataapi/limit_up/limit_up_pool → 涨停 38 只，与东财一致；
+#   它的跌停池没有对外开放的同类接口（多条路径都是 404），只能靠新浪近似兜底。
+_THS_ZT_URL = "https://data.10jqka.com.cn/dataapi/limit_up/limit_up_pool"
+_THS_ZT_FIELDS = "199112,330329,330324,330325"
+
+
+def _ths_limit_pool(kind):
+    """同花顺涨停池（东财 push2ex 的备用线路；同花顺无跌停池接口）。
+
+    字段对照（实测）：code=代码 name=名称 latest=现价 change_rate=涨跌幅%
+    order_amount=封单额 high_days=「首板/2连板…」 reason_type=涨停原因。
+    """
+    if kind != "zt":
+        raise _empty("同花顺只提供涨停池")
+    data = _req_json(_ths_sess, _THS_ZT_URL,
+                     params={"page": 1, "limit": 200, "field": _THS_ZT_FIELDS,
+                             "filter": "HS,GEM2STAR", "order_field": "330324",
+                             "order_type": "0", "date": time.strftime("%Y%m%d")})
+    d = (data or {}).get("data") or {}
+    info = d.get("info") or []
+    if not info:
+        raise _empty("同花顺涨停池为空")
+
+    def _hhmmss(v):
+        try:
+            return time.strftime("%H:%M:%S", time.localtime(int(v)))
+        except (TypeError, ValueError):
+            return ""
+
+    items = []
+    for x in info:
+        days = re.findall(r"\d+", str(x.get("high_days") or ""))
+        items.append({
+            "code": x.get("code"), "name": x.get("name"),
+            "price": _to_float(x.get("latest")),
+            "change_pct": _to_float(x.get("change_rate")),
+            "amount": _to_float(x.get("order_amount")),      # 封单额（东财的 amount 是成交额，口径不同）
+            "lbc": int(days[0]) if days else 1,              # 连板数，从「2连板」里取数字
+            "first_time": _hhmmss(x.get("first_limit_up_time")),
+            "last_time": _hhmmss(x.get("last_limit_up_time")),
+        })
+    count = ((d.get("page") or {}).get("total")) or len(items)
+    return {"count": count, "items": items}
+
+
+# 各板的涨跌幅限制（用于按「现价 = 昨收 ×(1±限制)」精确反推涨跌停）
+_BJ_PREFIX = ("43", "83", "87", "88", "92")
+
+
+def _limit_pct(code, name):
+    """按代码前缀 / ST 名称推断该股当日的涨跌幅限制。"""
+    c = str(code or "")
+    nm = str(name or "").upper().replace(" ", "")
+    if nm.startswith("ST") or nm.startswith("*ST"):
+        return 0.05
+    if c.startswith(("300", "301", "688", "689")):
+        return 0.20
+    if c.startswith(_BJ_PREFIX):
+        return 0.30
+    return 0.10
+
+
+def _round2(v):
+    """四舍五入到分（Python 的 round() 是银行家舍入，会和交易所口径差一分钱）。"""
+    return int(v * 100 + (0.5 if v >= 0 else -0.5)) / 100.0
+
+
+def _sina_limit_pool(kind):
+    """新浪分页近似涨跌停池（最后兜底）。
+
+    新浪列表接口能按涨跌幅排序，涨/跌停都堆在第一页，取前 LIMIT_POOL_SINA_PAGES 页
+    就够（默认 2 页 = 200 只，实测覆盖当日全部涨跌停）。判定方式是**精确价**：
+    现价 == 昨收 ×(1±限制) 四舍五入到分，限制按主板 10% / 创业板科创板 20% /
+    北交所 30% / ST 5% 推断 —— 新股上市首日那种任意涨幅不会被误判成涨停。
+
+    口径说明：这是**近似**兜底（连板数 lbc 拿不到，给 None），
+    只在东财 push2ex 与同花顺都失败时才会用到。
+    """
+    pages = int(getattr(config, "LIMIT_POOL_SINA_PAGES", 2) or 2)
+    asc = 1 if kind == "dt" else 0
+    rows = []
+    for pg in range(1, pages + 1):
+        arr = _sina_hqnode(pg, 100, "changepercent", asc)
+        if not arr:
+            break
+        rows.extend(arr)
+        if len(arr) < 100:
+            break
+        time.sleep(0.15)
+    items = []
+    for x in rows:
+        code = str(x.get("code") or "")
+        name = str(x.get("name") or "")
+        nm = name.upper().replace(" ", "")
+        if nm.startswith(("N", "C")):
+            continue          # 新股首日(N)/上市次日起 5 日内(C)不设涨跌幅限制，不算涨跌停
+        prev = _to_float(x.get("settlement"))
+        cur = _to_float(x.get("trade"))
+        pct = _to_float(x.get("changepercent"))
+        if not prev or cur is None or pct is None:
+            continue
+        lim = _limit_pct(code, name)
+        target = _round2(prev * (1 + lim) if kind == "zt" else prev * (1 - lim))
+        if abs(cur - target) > 0.011:
+            continue
+        items.append({"code": code, "name": name, "price": cur,
+                      "change_pct": pct, "amount": _to_float(x.get("amount")),
+                      "lbc": None, "first_time": str(x.get("ticktime") or ""),
+                      "last_time": ""})
+    if not items:
+        raise _empty("新浪涨跌停池为空")
+    return {"count": len(items), "items": items}
+
+
 def _em_news(limit):
     """东财 7x24 财经快讯（剥离 var ajaxResult= 前缀）。"""
     url = ("https://newsapi.eastmoney.com/kuaixun/v1/"
@@ -563,6 +742,25 @@ def _em_news(limit):
         "time": x.get("showtime"), "title": (x.get("title") or "").strip(),
         "digest": (x.get("digest") or "").strip(), "url": x.get("url_w"),
     } for x in lives]
+
+
+def _em_fast_news(limit):
+    """东财快讯备用线路（np-listapi，与 newsapi 是两条不同的接口）。
+
+    实测 2026-09-24：返回 title / summary / showTime，字段够用；
+    比 newsapi 少一个原文链接（该接口不返回 url），给空串。
+    """
+    data = _req_json(_news_sess, "https://np-listapi.eastmoney.com/comm/web/getFastNewsList",
+                     params={"client": "web", "biz": "web_724", "fastColumn": "102",
+                             "sortEnd": "", "pageSize": limit, "req_trace": "1"})
+    lst = ((data or {}).get("data") or {}).get("fastNewsList") or []
+    if not lst:
+        raise _empty("东财快讯(np-listapi)为空")
+    return [{
+        "time": x.get("showTime"), "title": (x.get("title") or "").strip(),
+        "digest": (x.get("summary") or "").strip(),
+        "url": x.get("uniqueUrl") or x.get("url") or "",
+    } for x in lst[:limit]]
 
 
 def _em_kline(secid, adj, klt=101, beg="20200101"):
@@ -662,38 +860,68 @@ def _tx_amount_rank(limit):
     return out
 
 
+# 腾讯K线接口（2026-09-24 实测）：
+#   老的 web.ifzq.gtimg.cn/appstock/app/fqkline/get 已经一律返回 HTTP 501（接口下线），
+#   这是「腾讯K线源实际已死、只是被东财兜底悄悄接住」的原因。现存两条线路：
+#     proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get  param 末位给 qfq/bfq
+#     web.ifzq.gtimg.cn/appstock/app/kline/kline                  只提供不复权
+_TX_KLINE_URLS = (
+    ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get", True),
+    ("https://web.ifzq.gtimg.cn/appstock/app/kline/kline", False),
+)
+
+
+def _tx_kline_pull(url, flag, tx_code, beg, end, keys):
+    """拉一段腾讯K线，返回 {日期: 行}；flag 为空表示该线路不吃复权参数。"""
+    param = (f"{tx_code},day,{beg},{end},640,{flag}" if flag
+             else f"{tx_code},day,{beg},{end},640,")
+    data = _req_json(_tx_sess, url, params={"param": param})
+    d = (data or {}).get("data")
+    if not isinstance(d, dict):
+        return {}
+    node = d.get(tx_code) or {}
+    rows_raw = []
+    for k in keys:
+        if isinstance(node.get(k), list) and node[k]:
+            rows_raw = node[k]
+            break
+    out = {}
+    for k in rows_raw:
+        if len(k) < 6:
+            continue
+        try:
+            out[k[0]] = {"date": k[0], "open": float(k[1]), "close": float(k[2]),
+                         "high": float(k[3]), "low": float(k[4]), "volume": float(k[5])}
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _tx_kline(tx_code, adj):
-    """腾讯日线K线（web.ifzq.gtimg.cn，分段拉取合并）。
-    腾讯不复权返回的 key 是 day（前复权才是 qfqday），两个都尝试。"""
+    """腾讯日线K线（分段拉取合并）。
+
+    腾讯不复权返回的 key 是 day（前复权是 qfqday），两个都尝试。
+    前复权只走带 qfq 参数的那条线路 —— web 的 kline/kline 只给不复权数据，
+    拿它冒充前复权会让均线/分位这些技术指标全部失真，宁可回落到东财。
+    """
     qfq = "qfq" if adj == "qfq" else "bfq"
     keys = ["qfqday"] if qfq == "qfq" else ["day", "bfqday"]
     segments = [("2026-12-31", "2024-01-01"), ("2024-01-01", "2021-06-01"),
                 ("2021-06-01", "2019-06-01"), ("2019-06-01", "2016-06-01")]
-    all_rows = {}
-    for end, beg in segments:
-        data = _req_json(_tx_sess, "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
-                         params={"param": f"{tx_code},day,{beg},{end},640,{qfq}"})
-        d = data.get("data") or {}
-        if not isinstance(d, dict):
+    for url, supports_flag in _TX_KLINE_URLS:
+        if qfq == "qfq" and not supports_flag:
             continue
-        node = d.get(tx_code) or {}
-        rows_raw = []
-        for k in keys:
-            if isinstance(node.get(k), list):
-                rows_raw = node[k]
-                break
-        for k in rows_raw:
-            if len(k) < 6:
-                continue
-            try:
-                all_rows[k[0]] = {"date": k[0], "open": float(k[1]), "close": float(k[2]),
-                                  "high": float(k[3]), "low": float(k[4]), "volume": float(k[5])}
-            except (TypeError, ValueError):
-                continue
-    rows = sorted(all_rows.values(), key=lambda x: x["date"])
-    if len(rows) < 30:
-        raise _empty("腾讯K线不足")
-    return rows
+        all_rows = {}
+        try:
+            for end, beg in segments:
+                all_rows.update(_tx_kline_pull(url, qfq if supports_flag else "",
+                                               tx_code, beg, end, keys))
+        except DataAnomaly:
+            continue
+        rows = sorted(all_rows.values(), key=lambda x: x["date"])
+        if len(rows) >= 30:
+            return rows
+    raise _empty("腾讯K线不足")
 
 
 # ================================================================ 新浪
@@ -752,31 +980,130 @@ def _sina_stock_rank(sort, order, limit):
 
 
 def _sina_breadth():
-    """新浪全市场涨跌家数（分页统计，最后兜底）。"""
-    total = up = down = flat = 0
-    page = 1
-    while True:
-        arr = _sina_hqnode(page, 100, "symbol", 1)
-        if not arr:
-            break
+    """新浪全市场涨跌家数（分页统计；东财被限流时的主力兜底）。
+
+    新浪单页上限就是 100 条（实测 num=200/500 也只给 100），全市场约 56 页，
+    串行要 35 秒。这里改成 4 路并发 + 失败页补拉一轮，实测约 10 秒。
+    结束后只要还有页面失败就判本次失败 —— 宁可报「这一项没数据」，也不返回
+    一个偏小的家数（偏小的涨跌家数会让「市场情绪」判读整体失真）。
+    """
+    def _tally(arr):
+        r = [0, 0, 0, 0]                     # 涨 / 跌 / 平 / 合计
         for x in arr:
             cp = _to_float(x.get("changepercent"))
-            total += 1
+            r[3] += 1
             if cp is None or cp == 0:
-                flat += 1
+                r[2] += 1
             elif cp > 0:
-                up += 1
+                r[0] += 1
             else:
-                down += 1
-        if len(arr) < 100:
+                r[1] += 1
+        return r
+
+    def _fetch(pages):
+        res = {}
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = {ex.submit(_sina_hqnode, pn, 100, "symbol", 1): pn for pn in pages}
+            for fut in as_completed(futs):
+                pn = futs[fut]
+                try:
+                    res[pn] = fut.result()
+                except Exception:
+                    res[pn] = None
+        return res
+
+    up = down = flat = total = 0
+    failed = []
+    page = 1
+    while page <= 200:
+        batch = list(range(page, page + 4))
+        res = _fetch(batch)
+        short = False
+        for pn in batch:
+            arr = res.get(pn)
+            if arr is None:
+                failed.append(pn)
+                continue
+            if not arr:
+                continue
+            u, d, f, n = _tally(arr)
+            up += u
+            down += d
+            flat += f
+            total += n
+            if len(arr) < 100:               # 最后一页（不满 100 只）
+                short = True
+        if short:
             break
-        page += 1
-        if page > 200:
-            break
-        time.sleep(0.15)
+        page += 4
+
+    if failed:                               # 失败页补拉一轮
+        still = []
+        for pn, arr in _fetch(failed).items():
+            if not arr:
+                still.append(pn)
+                continue
+            u, d, f, n = _tally(arr)
+            up += u
+            down += d
+            flat += f
+            total += n
+        failed = still
+
+    if failed:
+        raise _empty(f"新浪广度有 {len(failed)} 页失败")
     if total < 100:
         raise _empty("新浪广度数据不足")
     return {"total": total, "up": up, "down": down, "flat": flat}
+
+
+# 新浪板块榜：行业走 newSinaHy.php，概念走 newFLJK.php?param=class。
+# 两者都返回一条赋值语句 `var S_Finance_bankuai_xxx = {...};`，值是逗号分隔：
+#   0 代码  1 名称  2 家数  3 均价  4 涨跌额  5 涨跌幅%
+#   6 成交量 7 成交额 8 领涨股代码 9 领涨股涨跌幅 10 领涨股现价
+#   11 领涨股涨跌额 12 领涨股名称
+# 实测 2026-09-24：行业 49 个（玻璃行业 -1.88%…）、概念 175 个（黄金概念 -3.47%…）。
+_SINA_BOARD = {
+    "industry": ("https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php", None),
+    "concept": ("https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php", {"param": "class"}),
+}
+
+
+def _sina_sector_rank(kind, limit, asc=False):
+    """新浪行业/概念板块涨跌幅榜（东财 clist 被限流时的替代线路）。
+
+    与东财板块榜的差别要说清楚：新浪的板块划分（49 个行业 / 175 个概念）和
+    东财（约 86 个行业 / 数百个概念）**不是同一套**，所以这是「兜底口径」，
+    只保证涨跌幅、家数、领涨股这些字段本身是真的；板块内涨跌家数新浪不提供，
+    up/down 一律 None（消费方按缺省值显示）。
+    """
+    spec = _SINA_BOARD.get(kind)
+    if not spec:
+        raise _empty(f"新浪没有这种板块类型({kind})")
+    url, params = spec
+    text = _req_text(_sina_sess, url, params=params, encoding="gbk")
+    m = re.search(r"=\s*(\{.*\})", text, re.S)
+    if not m:
+        raise _empty("新浪板块榜格式异常")
+    try:
+        obj = json.loads(m.group(1).strip().rstrip(";"))
+    except Exception:
+        raise _empty("新浪板块榜解析失败")
+    rows = []
+    for v in obj.values():
+        f = str(v).split(",")
+        if len(f) < 13:
+            continue
+        pct = _to_float(f[5])
+        if pct is None:
+            continue
+        rows.append({"name": f[1], "change_pct": pct, "amount": _to_float(f[7]),
+                     "up": None, "down": None,
+                     "lead_stock": (f[12] or None)})
+    if not rows:
+        raise _empty("新浪板块榜为空")
+    rows.sort(key=lambda x: x["change_pct"], reverse=not asc)
+    return rows[:limit]
 
 
 def _sina_kline(symbol, adj):
@@ -849,6 +1176,36 @@ def _sina_news(limit):
     return out
 
 
+def _sina_roll_news(limit):
+    """新浪财经滚动新闻（feed.mix.sina.com.cn，与 zhibo 7x24 是不同接口）。
+
+    实测 2026-09-24 可用。时间是 unix 秒（ctime），正文摘要字段名是 intro。
+    """
+    data = _req_json(_sina_sess, "https://feed.mix.sina.com.cn/api/roll/get",
+                     params={"pageid": 153, "lid": 2516, "k": "", "num": limit, "page": 1})
+    items = ((data or {}).get("result") or {}).get("data") or []
+    if not items:
+        raise _empty("新浪滚动新闻为空")
+    out = []
+    for x in items:
+        title = (x.get("title") or "").strip()
+        if not title:
+            continue
+        ts = x.get("ctime") or x.get("intime") or ""
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+        except (TypeError, ValueError):
+            ts = str(ts)
+        out.append({"time": ts, "title": title,
+                    "digest": (x.get("intro") or "").strip(),
+                    "url": x.get("url") or ""})
+        if len(out) >= limit:
+            break
+    if not out:
+        raise _empty("新浪滚动新闻解析为空")
+    return out
+
+
 # ================================================================ 天天基金
 
 def _fund10_dividends(code):
@@ -901,54 +1258,124 @@ def get_stock_rank(fid="f3", order="desc", limit=10):
 
 
 def get_sector_rank(kind="industry", limit=10):
-    """板块涨跌幅榜。返回 [{name, change_pct, amount, up, down, lead_stock}]。"""
+    """板块涨跌幅榜。返回 [{name, change_pct, amount, up, down, lead_stock}]。
+
+    主备是东财 push2delay / push2（同一个 clist 接口），第三条线路是新浪
+    行业(概念)板块榜 —— 实测东财 clist 被限流时它是唯一能立刻顶上的整块替代。
+    新浪源不提供板块内涨跌家数，up/down 为 None。
+    """
     providers = [
         ("emdelay", lambda: _em_sector_rank(_EMD, kind, limit)),
         ("em", lambda: _em_sector_rank(_EM, kind, limit)),
+        ("sina", lambda: _sina_sector_rank(kind, limit)),
     ]
     _, data = fetch(f"板块榜({kind})", providers, validate=lambda d: len(d) >= 1)
     return data or []
 
 
 def get_sector_rank_fall(limit=5):
-    """行业板块跌幅榜。返回 [{name, change_pct, lead_stock}]。"""
+    """行业板块跌幅榜。返回 [{name, change_pct, lead_stock}]。
+
+    第三条线路同样是新浪（把它的行业榜按涨幅升序取前 N 个）。
+    """
     providers = [
         ("emdelay", lambda: _em_sector_fall(_EMD, limit)),
         ("em", lambda: _em_sector_fall(_EM, limit)),
+        ("sina", lambda: _sina_sector_rank("industry", limit, asc=True)),
     ]
     _, data = fetch("板块跌幅榜", providers, validate=lambda d: len(d) >= 1)
     return data or []
 
 
 def get_market_breadth():
-    """全市场涨跌家数。返回 {total, up, down, flat}。"""
+    """全市场涨跌家数。返回 {total, up, down, flat}。
+
+    主源是「一条 ulist 请求」（_em_breadth_fast）：沪深京三市家数一次拿全。
+    原来那种「把全市场拆成约 56 页去爬」的做法降级成可选深度兜底
+    （config.BREADTH_DEEP_FALLBACK，默认关）—— 它是把自己打成限流的主因，
+    而失败时回头再撞同一个接口也补不回来，所以兜底改交给新浪分页。
+    """
     providers = [
-        ("emdelay", lambda: _em_breadth(_EMD)),
-        ("em", lambda: _em_breadth(_EM)),
-        ("sina", _sina_breadth),
+        ("em", lambda: _em_breadth_fast(_EM)),
+        ("emdelay", lambda: _em_breadth_fast(_EMD)),
     ]
+    if getattr(config, "BREADTH_DEEP_FALLBACK", False):
+        providers += [
+            ("em_pages", lambda: _em_breadth(_EM)),
+            ("emdelay_pages", lambda: _em_breadth(_EMD)),
+        ]
+    providers.append(("sina", _sina_breadth))
     _, data = fetch("涨跌家数", providers, validate=lambda d: (d.get("total") or 0) >= 100, rounds=1)
     return data or {"total": 0, "up": 0, "down": 0, "flat": 0}
 
 
 def get_limit_pool(kind="zt"):
-    """涨停池(zt)/跌停池(dt)。返回 {count, items}。"""
-    _, data = fetch(f"涨跌停池({kind})", [("push2ex", lambda: _em_limit_pool(kind))])
+    """涨停池(zt)/跌停池(dt)。返回 {count, items}。
+
+    东财 push2ex 主源（唯一官方池，没有镜像域）；涨停池多一条同花顺线路，
+    跌停池多一条新浪近似线路（按涨跌停价精确匹配，连板数拿不到）。
+    """
+    providers = [("push2ex", lambda: _em_limit_pool(kind))]
+    if kind == "zt":
+        providers.append(("ths", lambda: _ths_limit_pool("zt")))
+    providers.append(("sina", lambda: _sina_limit_pool(kind)))
+    _, data = fetch(f"涨跌停池({kind})", providers)
     return data or {"count": 0, "items": []}
 
 
 def get_flash_news(limit=30):
-    """7x24 财经快讯。返回 [{time, title, digest, url}]。"""
+    """7x24 财经快讯。返回 [{time, title, digest, url}]。
+
+    四条线路：东财 newsapi、东财 np-listapi（同站不同接口）、新浪 7x24 直播、
+    新浪财经滚动新闻。后两条是不同站点的独立线路，被同时限流的概率低得多。
+    """
     providers = [
         ("newsapi", lambda: _em_news(limit)),
+        ("emnews", lambda: _em_fast_news(limit)),
         ("sina", lambda: _sina_news(limit)),
+        ("sinaroll", lambda: _sina_roll_news(limit)),
     ]
     _, data = fetch("财经快讯", providers, validate=lambda d: len(d) >= 1)
     return data or []
 
 
+def _em_ulist_quotes(codes):
+    """东财批量行情（ulist，一条请求拿多只票，与腾讯/新浪源同构）。
+
+    选 ulist 而不是 clist 是有意的：实测东财限流只掐 clist/get，
+    ulist.np/get 在同一条连接上仍然 12/12 正常，所以这条线路在
+    「腾讯 qt 挂了、clist 也被掐」的时候依然能顶上。
+    字段：f2=最新价 f3=涨跌幅 f4=涨跌额 f6=成交额 f12=代码 f14=名称
+          f15=最高 f16=最低 f18=昨收。
+    """
+    secids = ",".join(to_secid(c) for c in codes)
+    data = _req_json(_em_sess, "https://push2.eastmoney.com/api/qt/ulist.np/get",
+                     params={"fltt": 2, "invt": 2,
+                             "fields": "f2,f3,f4,f6,f12,f14,f15,f16,f18",
+                             "secids": secids})
+    diff = _em_diff(data)
+    if not diff:
+        raise _empty("东财批量行情为空")
+    out = {}
+    for x in diff:
+        code = str(x.get("f12") or "")
+        if not code:
+            continue
+        amt = _to_float(x.get("f6"))
+        out[code] = {
+            "name": x.get("f14"), "price": _to_float(x.get("f2")),
+            "prev_close": _to_float(x.get("f18")), "change": _to_float(x.get("f4")),
+            "pct": _to_float(x.get("f3")), "high": _to_float(x.get("f15")),
+            "low": _to_float(x.get("f16")),
+            "amount_wan": (amt / 10000.0) if amt is not None else None,
+        }
+    if not out:
+        raise _empty("东财批量行情解析为空")
+    return out
+
+
 def get_realtime_quotes(codes):
-    """实时行情（腾讯主源 / 新浪兜底）。codes 形如 [sh510880, ...]。
+    """实时行情（腾讯主源 / 新浪 / 东财 ulist 兜底）。codes 形如 [sh510880, ...]。
     返回 {code: {name, price, prev_close, change, pct, high, low, amount_wan}}。"""
     def _q_tx():
         return _tx_parse_quotes(codes)
@@ -956,10 +1383,15 @@ def get_realtime_quotes(codes):
     def _q_sina():
         return _sina_quotes(codes)
 
+    def _q_em():
+        return _em_ulist_quotes(codes)
+
     def _valid(d):
         return any(v and v.get("price") is not None for v in d.values())
 
-    _, data = fetch("实时行情", [("tx", _q_tx), ("sina", _q_sina)], validate=_valid)
+    _, data = fetch("实时行情",
+                    [("tx", _q_tx), ("sina", _q_sina), ("em", _q_em)],
+                    validate=_valid)
     return data or {}
 
 def get_kline(tx_code, secid):

@@ -5,6 +5,8 @@ numpy>=1.21
 playwright>=1.30
 # 启动密码验证（Argon2 慢哈希）
 argon2-cffi>=23.1
+# 隐私文件加密（AES-256-GCM；secure_store.py）/ 加快的密钥派生
+cryptography>=41.0
 # 可选：Pillow —— 装了会对主页内嵌的地球贴图做降采样（单文件 HTML 更小），
 # 没装则原图直接内嵌，功能一致。
 # Pillow>=9.0

@@ -18,6 +18,7 @@ import time
 
 import bars
 import config
+import secure_store
 import risk
 
 FILE = config.STRATEGY_FILE
@@ -35,8 +36,7 @@ _PX_TTL = 10.0
 
 def _stamp_of(path):
     try:
-        st = os.stat(path)
-        return (st.st_mtime_ns, st.st_size)
+        return secure_store.stamp(path)
     except OSError:
         return None
 
@@ -49,7 +49,7 @@ def load(force=False):
         st = _stamp_of(FILE)
         if _cfg is not None and not force and st == _stamp:
             return _cfg
-        with open(FILE, encoding="utf-8") as f:
+        with secure_store.open_reader(FILE) as f:
             _cfg = json.load(f)
         _stamp = st
         new = _cfg
@@ -106,7 +106,7 @@ def reload():
 def save(cfg):
     """回写（只用于改 active / capital 这类开关，不用于改策略本身）。"""
     global _cfg, _stamp
-    with open(FILE, "w", encoding="utf-8") as f:
+    with secure_store.open_writer(FILE) as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     with _lock:
         _cfg = cfg
@@ -318,7 +318,7 @@ def _positions_file():
 
 def load_positions():
     try:
-        with open(_positions_file(), encoding="utf-8") as f:
+        with secure_store.open_reader(_positions_file()) as f:
             return json.load(f)
     except Exception:
         return {"positions": []}

@@ -30,6 +30,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 import config  # noqa: E402  数据文件统一在 data/，路径常量集中在 config.py
+import secure_store  # noqa: E402  隐私文件加密读写
 
 POS_FILE = config.POS_FILE
 WATCH_FILE = config.WATCH_FILE
@@ -38,12 +39,12 @@ PORT = 8765
 
 # ---------------- 持仓数据读写 ----------------
 def load_positions():
-    with open(POS_FILE, "r", encoding="utf-8") as f:
+    with secure_store.open_reader(POS_FILE) as f:
         return json.load(f)
 
 
 def save_positions(data):
-    with open(POS_FILE, "w", encoding="utf-8") as f:
+    with secure_store.open_writer(POS_FILE) as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -90,14 +91,14 @@ WATCH_GROUPS = ("etf", "stock", "other")
 def load_watchlist_raw():
     """读 watchlist.json 的原始结构；文件不存在时返回空壳（不在此处自动建种子）。"""
     try:
-        with open(WATCH_FILE, "r", encoding="utf-8") as f:
+        with secure_store.open_reader(WATCH_FILE) as f:
             return json.load(f) or {"items": []}
     except Exception:
         return {"items": []}
 
 
 def save_watchlist(data):
-    with open(WATCH_FILE, "w", encoding="utf-8") as f:
+    with secure_store.open_writer(WATCH_FILE) as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -730,7 +731,7 @@ def serve_in_thread(port=None):
 
 def main():
     # 启动前检查 positions.json 是否存在
-    if not os.path.exists(POS_FILE):
+    if not secure_store.exists(POS_FILE):
         print("[错误] 找不到 positions.json：", POS_FILE)
         sys.exit(1)
     server = make_server()

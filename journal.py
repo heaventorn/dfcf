@@ -34,6 +34,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 
 import config
+import secure_store
 
 FILE = os.path.join(config.OUTPUT_DIR, "journal.jsonl")
 STATE = os.path.join(config.OUTPUT_DIR, "journal_state.json")
@@ -59,11 +60,7 @@ def _now(at=None):
 
 def _dump(path, obj):
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)
+        secure_store.write_json(path, obj, indent=1)
         return True
     except Exception:
         return False
@@ -71,8 +68,7 @@ def _dump(path, obj):
 
 def _load_json(path, default):
     try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        return secure_store.read_json(path, default)
     except Exception:
         return default
 
@@ -80,16 +76,13 @@ def _load_json(path, default):
 def _rotate():
     """文件太长了就只留最后 MAX_LINES 行。只在追加后顺手看一眼大小。"""
     try:
-        if os.path.getsize(FILE) < 2 * 1024 * 1024:
+        st = secure_store.stamp(FILE)
+        if not st or st[1] < 2 * 1024 * 1024:
             return
-        with open(FILE, encoding="utf-8") as f:
-            lines = [l for l in f if l.strip()]
+        lines = secure_store.read_lines(FILE)
         if len(lines) <= MAX_LINES:
             return
-        tmp = FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.writelines(lines[-MAX_LINES:])
-        os.replace(tmp, FILE)
+        secure_store.write_lines(FILE, lines[-MAX_LINES:])
     except Exception:
         pass
 
@@ -110,8 +103,8 @@ def log(kind, title, detail="", level="info", sid=None, ref=None, at=None):
     with _lock:
         try:
             os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-            with open(FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(e, ensure_ascii=False, default=str) + "\n")
+            secure_store.append_line(
+                FILE, json.dumps(e, ensure_ascii=False, default=str))
         except Exception:
             return e
         _rotate()
@@ -155,7 +148,7 @@ def log_change(key, value, kind, title, detail="", level="info",
 def read(limit=120, kind=None, sid=None, level=None, newest_first=True):
     out = []
     try:
-        with open(FILE, encoding="utf-8") as f:
+        with secure_store.open_reader(FILE) as f:
             for line in f:
                 line = line.strip()
                 if not line:

@@ -52,6 +52,7 @@ sys.path.insert(0, BASE)
 
 import bars
 import config
+import secure_store
 import premium
 import strategy
 
@@ -422,8 +423,7 @@ def warm():
 
 def load():
     try:
-        with open(FILE, encoding="utf-8") as f:
-            st = json.load(f)
+        st = secure_store.read_json(FILE, {})
         return st if isinstance(st, dict) else {}
     except Exception:
         return {}
@@ -432,10 +432,7 @@ def load():
 def save(st):
     try:
         os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-        tmp = FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(st, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, FILE)
+        secure_store.write_json(FILE, st, indent=1)
         return True
     except Exception:
         return False

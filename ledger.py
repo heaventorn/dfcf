@@ -47,6 +47,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 
 import config
+import secure_store
 
 FILE = os.path.join(config.OUTPUT_DIR, "ledger.json")
 
@@ -63,11 +64,7 @@ def _today(day=None):
 
 def _dump(obj):
     try:
-        os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-        tmp = FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, FILE)
+        secure_store.write_json(FILE, obj, indent=1)
         return True
     except Exception:
         return False
@@ -75,8 +72,7 @@ def _dump(obj):
 
 def load():
     try:
-        with open(FILE, encoding="utf-8") as f:
-            d = json.load(f)
+        d = secure_store.read_json(FILE, {})
     except Exception:
         d = {}
     if not isinstance(d, dict):

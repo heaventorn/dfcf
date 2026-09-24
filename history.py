@@ -379,18 +379,22 @@ def report(days=7, db_path=None, as_json=False):
                 "采集数据，之后这里就能看到趋势。")
 
     lines = [f"历史快照：共 {len(rows)} 轮（最近在前，最多 {days} 轮）", ""]
-    lines.append(f"{'时间':<20}{'涨/跌':>12}{'涨停/跌停':>12}{'上证':>16}  领涨板块")
+    lines.append(f"{'时间':<20}{'涨/跌':>12}{'涨停/跌停':>12}{'上证':>18}  领涨板块")
     for r in rows:
         up, down = r.get("breadth_up"), r.get("breadth_down")
         lu, ld = r.get("limit_up"), r.get("limit_down")
         sh = r.get("sh_close")
         pct = r.get("sh_pct")
         sh_txt = f"{_fmt(sh)} ({_fmt(pct, 2, '%')})" if sh is not None else "-"
+        # 注意：这几段宽度要和表头的 12/12/18 对齐，且两两之间必须留分隔，
+        # 否则「1038/4358」会和「38/4」粘成「1038/  435838/       4」。
+        updown = f"{_fmt(up)}/{_fmt(down)}"
+        limitupdown = f"{_fmt(lu)}/{_fmt(ld)}"
         lines.append(
             f"{str(r.get('ts'))[:19]:<20}"
-            f"{_fmt(up)}/{_fmt(down):>6}"
-            f"{_fmt(lu)}/{_fmt(ld):>8}"
-            f"{sh_txt:>16}  {r.get('lead_sector') or '-'}")
+            f"{updown:>12}"
+            f"{limitupdown:>12}"
+            f"{sh_txt:>18}  {r.get('lead_sector') or '-'}")
 
     if cmp_:
         lines += ["", f"环比（{cmp_.get('ts')} vs {cmp_.get('prev_ts')}）："]

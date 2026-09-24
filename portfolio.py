@@ -22,6 +22,7 @@ import time
 import requests
 
 import config
+import secure_store
 import sources
 
 from config import BASE_DIR
@@ -34,7 +35,7 @@ POS_FILE = config.POS_FILE
 def load_positions():
     """读取真实持仓清单（positions.json，手动维护：代码/成本价/数量）。"""
     try:
-        with open(POS_FILE, "r", encoding="utf-8") as f:
+        with secure_store.open_reader(POS_FILE) as f:
             return json.load(f).get("positions", [])
     except Exception:
         return []
@@ -119,9 +120,9 @@ def load_watchlist():
     只有**文件不存在**时才写入种子自选；文件存在但 items 为空，说明用户把自选
     清空了 —— 要尊重这个结果（返回空列表，主页显示空态），不能又种回种子。
     """
-    if os.path.exists(WATCH_FILE):
+    if secure_store.exists(WATCH_FILE):
         try:
-            with open(WATCH_FILE, "r", encoding="utf-8") as f:
+            with secure_store.open_reader(WATCH_FILE) as f:
                 items = (json.load(f) or {}).get("items") or []
             return [_watch_item(x) for x in items if isinstance(x, dict)]
         except Exception:
@@ -132,7 +133,7 @@ def load_watchlist():
 def save_watchlist(items):
     """写回 watchlist.json，返回规整后的条目列表。"""
     out = [_watch_item(x) for x in (items or []) if isinstance(x, dict)]
-    with open(WATCH_FILE, "w", encoding="utf-8") as f:
+    with secure_store.open_writer(WATCH_FILE) as f:
         json.dump({"_comment": "我的自选：只跟行情，不记成本/数量（要算盈亏的用 positions.json）。"
                               "group ∈ etf | stock | other。",
                    "items": out}, f, ensure_ascii=False, indent=2)

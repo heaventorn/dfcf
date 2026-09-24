@@ -41,13 +41,14 @@ def ensure_data_dir():
         dst = os.path.join(DATA_DIR, name)
         if not os.path.exists(src):
             continue
-        if os.path.exists(dst):
+        if _present(dst):
             # 两边都有：根目录那份更新，说明是「迁移之后、旧进程还没重启时写下的」，
             # 以它为准，data/ 里那份先留成 .bak，免得两头不一致把最新一笔吃掉。
-            if not _newer(src, dst):
+            cur = dst if os.path.exists(dst) else dst + ".enc"
+            if not _newer(src, cur):
                 continue
             try:
-                shutil.move(dst, dst + ".bak")
+                shutil.move(cur, cur + ".bak")
             except Exception:
                 pass
         try:
@@ -60,7 +61,7 @@ def ensure_data_dir():
     for name in _SEED_NAMES:
         dst = os.path.join(DATA_DIR, name)
         tpl = os.path.join(TEMPLATE_DIR, name.replace(".json", ".example.json"))
-        if not os.path.exists(dst) and os.path.exists(tpl):
+        if not _present(dst) and os.path.exists(tpl):
             try:
                 shutil.copyfile(tpl, dst)
             except Exception:
@@ -75,6 +76,15 @@ def _newer(a, b):
         return os.path.getmtime(a) > os.path.getmtime(b)
     except OSError:
         return False
+
+
+def _present(path):
+    """data/ 里这份数据在不在：明文或密文（*.enc）任一存在都算。
+
+    加密后明文会被删掉、只剩 positions.json.enc，所以「缺文件就播种」必须先看密文，
+    否则每次启动都会用模板把已加密的持仓盖掉。
+    """
+    return os.path.exists(path) or os.path.exists(path + ".enc")
 
 
 ensure_data_dir()
@@ -98,6 +108,22 @@ EDGE_PROFILE_DIR = os.path.join(BASE_DIR, ".edge_profile")
 
 # 输出目录
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+
+# ------------------------------------------------------------------ 加密保险库
+# secure_store.py 用：下面这些文件落盘一律是密文（同名 + ".enc"），明文只在内存里。
+# data/ 目录下所有 *.json 也会被自动纳入（以后新加的数据文件不用再登记）。
+VAULT_KEYRING_FILE = os.path.join(DATA_DIR, "keyring.json")
+SECURE_FILES = (
+    POS_FILE, WATCH_FILE, STRATEGY_FILE, COOKIE_FILE, SECRETS_FILE,
+    os.path.join(OUTPUT_DIR, "ledger.json"),          # 现金流台账（多少钱进出）
+    os.path.join(OUTPUT_DIR, "journal.jsonl"),        # 操作日志
+    os.path.join(OUTPUT_DIR, "journal_state.json"),
+    os.path.join(OUTPUT_DIR, "plan_history.jsonl"),   # 执行过的买卖计划
+    os.path.join(OUTPUT_DIR, "track.json"),           # 盈亏追踪
+    os.path.join(OUTPUT_DIR, "track.bak.json"),
+    os.path.join(OUTPUT_DIR, "monitor.json"),
+    os.path.join(OUTPUT_DIR, "holding_eval.json"),
+)
 
 # 请求头
 HEADERS = {
@@ -138,6 +164,28 @@ COLLECT_RETRIES = 3
 # 全市场涨跌家数分页补拉轮数（sources._em_breadth 使用）
 BREADTH_REFILL_ROUNDS = 3
 
+# ---- 涨跌家数：一条请求拿到全市场（sources._em_breadth_fast 使用）----
+# 原理：市场指数行情里的 f104/f105/f106 就是该指数的「涨/跌/平家数」。
+# 只登记「市场指数」（沪市 / 深市 / 北交所），不要把沪深300、科创50 这类
+# 成分指数混进来 —— 那种指数返回的是成分股家数，会把总数算错。
+BREADTH_SECIDS = [
+    ("1.000001", "沪市"),
+    ("0.399001", "深市"),
+    ("0.899050", "北交所"),
+]
+
+# 涨跌家数字段：f104=上涨家数 f105=下跌家数 f106=平盘家数
+BREADTH_FIELDS = "f12,f14,f104,f105,f106"
+
+# 是否保留「逐页爬全市场」的深度兜底（原实现，约 56 次请求）。
+# 默认关闭：它是把自己打成限流的主要原因，快线（上面那条）失败时
+# 优先用新浪分页兜底，没必要再回头去撞同一个接口。
+BREADTH_DEEP_FALLBACK = False
+
+# 新浪分页兜底取前几页当作涨跌停池（sources._sina_limit_pool 使用）。
+# 接口按涨跌幅排序，涨/跌停都堆在最前面，两页（200 只）足够覆盖。
+LIMIT_POOL_SINA_PAGES = 2
+
 # 请求超时（秒）
 TIMEOUT = 15
 
@@ -160,6 +208,16 @@ SOURCE_COOLDOWN_MAX = 600
 SOURCE_SWITCH_DELAY = 0.4
 # 全部来源失败后、整体重试前的等待（秒）
 SOURCE_ALLFAIL_DELAY = 3.0
+
+# 东财直连源（em / emdelay，host = push2.eastmoney.com / push2delay.eastmoney.com）
+# 是否仍排在各路取数的第一位。
+# 实测（2026-09-24）：本机网络访问这两个域名的 /api/... 接口会被服务器直接断开，
+# 连真实浏览器打开同一个接口也一样（ERR_EMPTY_RESPONSE），属于线路/IP 级拦截，
+# 不是代码问题。而新浪 / 腾讯 / push2ex（涨停池）都正常。
+# 排在最前面＝每次取数都要先白等一两秒才切源，所以默认 False：
+# 把 em 一族挪到列表末尾，只在别的源都不行时再试它。
+# 哪天这条线路恢复（比如换了网络 / 换了 IP），把这里改成 True 就回到原来的优先级。
+EM_FIRST = False
 
 # ---- 实时新闻服务（live_server.py 使用）----
 # 后台自动抓取全球新闻的间隔（秒）；300 = 5 分钟

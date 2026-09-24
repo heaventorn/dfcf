@@ -18,6 +18,7 @@ import sys
 import requests
 
 import config
+import secure_store
 import strategy
 
 try:
@@ -37,7 +38,7 @@ def key_status():
     path = f if os.path.isabs(f) else os.path.join(config.DATA_DIR, f)
     field = cfg.get("key_field") or "deepseek_api_key"
     try:
-        with open(path, encoding="utf-8") as fh:
+        with secure_store.open_reader(path) as fh:
             data = json.load(fh)
         k = (data.get(field) or "").strip()
         if k:
