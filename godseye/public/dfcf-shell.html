@@ -554,18 +554,72 @@
       cv.addEventListener('touchmove', noteInteraction, { passive: true });
       play();
 
+      // ---- 6.5) 地球居中：让地球落在「可视区」正中，而不是整块画布正中 ----
+      // 画布是整屏的，但左边任务栏 + 快讯栏常驻占了 514px、右边「国家新闻」滑出时
+      // 再占 380px，所以地球按画布居中就会偏左，看着别扭。这里用 Cesium 的透镜偏移
+      // (frustum.xOffset) 把画面整体平移到剩下那块可视区的正中：不动画布尺寸，
+      // 不会引起 WebGL 重新分配缓冲。注意它只改画面、不改拾取射线，见下面的 pickFix。
+      var offPx = 0, offRaf = 0;      // offPx = 当前画面整体往右平移了多少像素
+      function freeAreaShift() {
+        var W = cv.clientWidth || 1;
+        var rail = $('rail'), news = $('news');
+        var left = rail ? rail.getBoundingClientRect().width : 0;
+        if (news && getComputedStyle(news).display !== 'none') {
+          left += news.getBoundingClientRect().width;
+        }
+        var right = (placeEl && placeEl.classList.contains('on'))
+          ? placeEl.getBoundingClientRect().width : 0;
+        if (W - left - right < 240) { right = 0; }   // 窄屏别把地球挤没了
+        return left + (W - left - right) / 2 - W / 2;   // 相对画面正中，往右挪多少像素
+      }
+      // 把「画面整体右移 px 像素」写进相机。Cesium 的 xOffset 是加在近平面 left/right
+      // 上的距离，所以 1 像素的平移 = near*tan(fov/2)/(W/2)（横向）这么大的 xOffset。
+      function applyOffset(px) {
+        var fr = viewer.camera.frustum;
+        if (!fr || !isFinite(fr.xOffset) || !isFinite(fr.fov)) { offPx = 0; return false; }
+        var W = cv.clientWidth || 1;
+        var aspect = fr.aspectRatio || (W / (cv.clientHeight || 1));
+        var tanHalfW = Math.tan(fr.fov * 0.5) * (aspect > 1 ? 1 : aspect);
+        offPx = px;
+        fr.xOffset = -px * (fr.near * tanHalfW) / (W * 0.5);
+        return true;
+      }
+      // 但 Cesium 的拾取射线**不吃** xOffset：画面平移了、射线还在老地方。
+      // 所以问「这个像素下面是什么」的时候要把坐标换算回去，否则点国家会点到隔壁去。
+      function pickFix(pos) {
+        return offPx ? new Cesium.Cartesian2(pos.x - offPx, pos.y) : pos;
+      }
+      function recenterGlobe(animate) {
+        var target = freeAreaShift();
+        if (!animate) {
+          if (offRaf) { cancelAnimationFrame(offRaf); offRaf = 0; }
+          applyOffset(target);
+          return;
+        }
+        if (offRaf) { cancelAnimationFrame(offRaf); }
+        var from = offPx, t0 = performance.now();
+        offRaf = requestAnimationFrame(function step(now) {
+          var t = Math.min(1, (now - t0) / 220);
+          var ease = 1 - Math.pow(1 - t, 3);
+          applyOffset(from + (target - from) * ease);
+          offRaf = (t < 1) ? requestAnimationFrame(step) : 0;
+        });
+      }
+      window.addEventListener('resize', function () { recenterGlobe(false); });
+
       // ---- 7) 点击拾取：光点 → 该城市新闻；空白处 → 落在哪个国家就看该国新闻 ----
       // 结果都送进右栏「国家新闻」，不再弹小卡片。
       var handler = new Cesium.ScreenSpaceEventHandler(cv);
       handler.setInputAction(function (movement) {
-        var picked = viewer.scene.pick(movement.position);
+        var pos = pickFix(movement.position);     // 把透镜偏移换回去，否则会点偏
+        var picked = viewer.scene.pick(pos);
         if (Cesium.defined(picked) && picked.id && picked.id.dfcfGroup) {
           var g = picked.id.dfcfGroup;
           openPlace({ country: g.country, city: g.city, sev: g.sev, count: g.count });
           return;
         }
         // 没点到光点：把屏幕点反投影回经纬度，自己判断落在哪个国家
-        var cart = viewer.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid);
+        var cart = viewer.camera.pickEllipsoid(pos, viewer.scene.globe.ellipsoid);
         if (!cart) { closePlace(); return; }
         var c = Cesium.Cartographic.fromCartesian(cart);
         var en = countryAt(world, Cesium.Math.toDegrees(c.longitude),
@@ -693,6 +747,7 @@
         placeSel = sel || null;
         placeEl.classList.toggle('on', !!placeSel);
         document.body.classList.toggle('place-open', !!placeSel);
+        recenterGlobe(true);          // 右栏滑出 / 收起时，地球跟着回到可视区正中
         if (!placeSel) return;
         renderPlace();
         placeBody.scrollTop = 0;
@@ -737,6 +792,7 @@
       function setNewsOpen(on) {
         document.body.classList.toggle('news-off', !on);
         try { localStorage.setItem('dfcf.news.open', on ? '1' : '0'); } catch (err) {}
+        recenterGlobe(true);          // 左栏收起 / 展开后同样重新居中
       }
       $('newsToggle').onclick = function () {
         setNewsOpen(document.body.classList.contains('news-off'));
@@ -748,6 +804,7 @@
       var newsWantOpen = true;
       try { newsWantOpen = localStorage.getItem('dfcf.news.open') !== '0'; } catch (err) {}
       setNewsOpen(newsWantOpen);
+      recenterGlobe(false);           // 首屏直接落在正中，不做动画
       fetchNews();                                  // 先拉一次，把左栏和菜单条数点亮
       newsTimer = setInterval(fetchNews, NEWS_POLL_MS);
 
