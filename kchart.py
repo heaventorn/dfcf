@@ -8,9 +8,9 @@
 
 数据源：腾讯行情接口（proxy.finance.qq.com / web.ifzq.gtimg.cn）
 
-绘图不在这里：主页用 lightweight-charts（内联在 home.py），个股页用同一套
-（stock.html）；曾经的 matplotlib「生成 base64 PNG」链路随旧综合报告一起删除，
-连带去掉了 matplotlib / numpy / io 三个依赖。
+绘图不在这里：主页（dashboard.py）把分时 / 日K 直接画成内联 SVG，个股页
+（stock.html）用 lightweight-charts；曾经的 matplotlib「生成 base64 PNG」
+链路随旧综合报告一起删除，连带去掉了 matplotlib / numpy / io 三个依赖。
 """
 import requests
 import pandas as pd

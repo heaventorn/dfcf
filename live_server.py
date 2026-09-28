@@ -225,6 +225,14 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = "/strategy.html"
             return super().do_GET()
 
+        # ---- 自选与持仓页：/portfolio（短地址，方便收藏 / 从别处跳进来） ----
+        # 真实文件在 output/portfolio.html；302 过去，页内相对链接才不会指错地方。
+        if path in ("/portfolio", "/portfolio/", "/assets"):
+            self.send_response(302)
+            self.send_header("Location", "/output/portfolio.html")
+            self.end_headers()
+            return
+
         if path.startswith("/api/strategy"):
             if STRATEGY_API is None:
                 self._json({"ok": False, "msg": "策略服务未启用：%s" % STRATEGY_ERR}, 503)
@@ -266,6 +274,28 @@ class Handler(SimpleHTTPRequestHandler):
                 "interval": HUB.interval if HUB else None,
                 "next_refresh_in": max(0, int((nxt or 0) - time.time())) if HUB else None,
                 "error": snap.get("error"),
+            })
+            return
+
+        # ---- 全球眼探活：想链过去的地方靠它判断 5180 起没起来 ----
+        # 双端口并行：DFCF 在 8766，3D 地球（全球眼）在 5180。这里只做一次 1 秒的
+        # 连接探测，不代理、不转发；页面拿到 up=false 时给一句人话提示，不影响其它功能。
+        if path == "/api/godseye":
+            port = int(getattr(config, "GODSEYE_PORT", 5180))
+            up = False
+            try:
+                import socket
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(1)
+                    up = s.connect_ex(("127.0.0.1", port)) == 0
+            except Exception:
+                up = False
+            self._json({
+                "ok": True,
+                "up": up,
+                "port": port,
+                "url": getattr(config, "GODSEYE_URL", "http://127.0.0.1:%d/" % port),
+                "installed": os.path.isdir(getattr(config, "GODSEYE_DIR", "")),
             })
             return
 

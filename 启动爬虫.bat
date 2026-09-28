@@ -19,16 +19,18 @@ echo   (auth_check.py has unlocked the vault and started main.py)
 echo.
 echo.
 echo ============================================================
-echo   Done. Dashboard URL:
-echo     http://127.0.0.1:8766/output/index.html
-echo   Background service (auto-started, one process for both ports):
-echo     page + live news + stock : http://127.0.0.1:8766   (news API: /api/news)
-echo     position + watchlist mgr : http://127.0.0.1:8765
-echo   Click any holding/watchlist row on the home page to open the
-echo   stock terminal in the same window (back button returns home).
-echo   Global news auto-refreshes every 5 minutes and updates
-echo   the globe + news panel in place (no page reload).
-echo   Closing this window stops all background services.
+echo   两页 + 左侧任务栏，同一个窗口里点着切换：
+echo     大盘总览    http://127.0.0.1:8766/output/index.html
+echo     自选与持仓  http://127.0.0.1:8766/output/portfolio.html
+echo     个股详情    /stock?code=600941   (任务栏里也有)
+echo     资产配置桶  策略执行台  http://127.0.0.1:8766/strategy
+echo     全球眼      http://127.0.0.1:5180  (3D 地球，已关掉遮罩与特效文字)
+echo.
+echo   后台服务（自动拉起，关掉本窗口就一起停）：
+echo     大盘/新闻/个股   http://127.0.0.1:8766   (快讯 API: /api/news)
+echo     持仓/自选管理    http://127.0.0.1:8765
+echo     全球眼 3D 地球   http://127.0.0.1:5180
+echo   财经快讯每 5 分钟自动刷新；点持仓/自选/涨幅榜任意一行进个股页。
 echo ============================================================
 echo.
 pause

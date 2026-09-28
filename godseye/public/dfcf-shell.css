@@ -1,0 +1,109 @@
+/* DFCF 本地终端 · 全球眼外壳
+ * ==========================================================================
+ * 两件事，都在这一份样式里：
+ *
+ * 1) 只留地球 + 各种选项卡面板，把相机上的覆盖与特效文字全部关掉：
+ *      #scope-mask          相机上的圆形遮罩（scopeMask.js 画的）
+ *      #intel-hud           角落特效文字（TOP SECRET / REC / MGRS / GSD …）
+ *      #title-bar           左上 GOD'S EYE VIEW 品牌标题
+ *      #style-indicator     右上 ACTIVE STYLE 指示
+ *      #safe-frame-overlay  录制用安全框
+ *      #cockpit-hud         相机取景框/准星那层
+ *      另外几个同步状态小胶囊一起收掉，画面更干净。
+ *
+ * 2) 给左侧 174px 的 DFCF 任务栏腾位置：3D 场景整体右移，地球重新居中。
+ *      任务栏是纯文字的六个入口，和 DFCF 主页那一套完全一致。
+ *
+ * 这份样式同时作用于 dev（npm run dev）与 dist（npm run build / preview），
+ * 因为它放在 public/ 里，构建时会被原样复制到站点根目录。
+ */
+
+#scope-mask,
+#intel-hud,
+#title-bar,
+#style-indicator,
+#safe-frame-overlay,
+#cockpit-hud,
+#global-loading-status,
+#traffic-sync-chip,
+#cctv-sync-chip {
+  display: none !important;
+}
+
+/* 给任务栏让位。 */
+#cesiumContainer,
+#world-overlay-root {
+  left: 174px;
+  width: calc(100% - 174px);
+}
+
+/* ------------------------------------------------------------------ 任务栏 */
+
+#dfcf-rail {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 174px;
+  z-index: 5000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 10px;
+  background: linear-gradient(180deg, #0d131c, #0a0e14);
+  border-right: 1px solid #1b2430;
+  font: 400 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+#dfcf-rail .rail-brand {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: #e9eef6;
+  padding: 6px 8px 14px;
+}
+
+#dfcf-rail .rail-brand span {
+  color: #ff9f1c;
+  font-size: 11px;
+  letter-spacing: 1px;
+  margin-left: 6px;
+}
+
+#dfcf-rail a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #a9b5c6;
+  text-decoration: none;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+#dfcf-rail a:hover {
+  background: #18202c;
+  color: #e9eef6;
+}
+
+#dfcf-rail a.on {
+  background: rgba(255, 159, 28, 0.14);
+  border-color: rgba(255, 159, 28, 0.42);
+  color: #ff9f1c;
+  font-weight: 700;
+}
+
+#dfcf-rail .rail-tip {
+  margin-top: auto;
+  padding: 8px;
+  color: #556072;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+/* 左下角原来那个「返回 DFCF」按钮不再需要：任务栏第一项就是它。 */
+#dfcf-return {
+  display: none !important;
+}

@@ -57,3 +57,12 @@ _scen/
 /positions.json
 /watchlist.json
 /strategy.json
+
+# ===== 上帝视角（内嵌在 godseye/ 的 God's Eye View）=====
+# 依赖目录几个 G，绝不入库；源码本体保留在仓库里。
+godseye/node_modules/
+godseye/.vite/
+godseye/dist/
+# 上游自带的功能演示 GIF（67 MB）：演示的是本项目已经删掉的语音 / 座舱 / 特效那些功能，
+# 留着只会让仓库和每次克隆都变重。docs 里引用这些动图的地方会显示不出来，属预期。
+godseye/docs/media/

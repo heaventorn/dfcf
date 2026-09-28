@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- DFCF 本地终端：5180 的首页就是「全球眼」正式版（瓦片地球 + 左「所有新闻」
+       / 右「国家新闻」那套），所以这一页只当备用入口：
+         · 正式端口 5180 上访问 / 会自动跳到 /dfcf-shell.html（正式版全球眼）
+         · 想看 Gods-Eye-View 原版指挥台，加 ?gev=1 打开
+         · vite dev（5173）等调试端口不跳转，方便继续改原版功能 -->
+  <script>
+    if (location.port === '5180' && !/[?&]gev=1\b/.test(location.search)) {
+      location.replace('/dfcf-shell.html' + location.search);
+    }
+  </script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>God's Eye View</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <!-- Icon font subset to the glyphs this app renders. Keep `icon_names` in sync
+       with the sources: src/materialSymbolsSubset.test.mjs fails when a source
+       names a glyph this list is missing, because a missing glyph does not draw
+       a box — the ligature never forms and the element renders the literal word. -->
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,400,0,0&icon_names=adjust,arrow_drop_down,arrow_forward,arrow_left,arrow_right,bolt,chevron_left,chevron_right,close,close_fullscreen,dark_mode,draw,east,flare,flight,layers_clear,light_mode,local_fire_department,my_location,navigation,normal,on,open_in_full,public,radar,radio,right_panel_close,right_panel_open,rocket_launch,skip_next,skip_previous,view_in_ar" rel="stylesheet" />
+  <!-- DFCF 本地终端外壳：关掉相机遮罩与特效文字，并留出左侧任务栏。 -->
+  <link rel="stylesheet" href="/dfcf-shell.css" />
+</head>
+<body>
+  <!-- gev:template scene-chrome -->
+
+  <!-- gev:template cockpit -->
+
+  <!-- gev:template display-controls -->
+
+  <!-- gev:template command-dock -->
+
+  <!-- gev:template layer-panels -->
+
+  <!-- gev:template context -->
+
+  <!-- gev:template welcome -->
+
+  <!-- gev:template provider-settings -->
+
+  <!-- gev:template hud-loading -->
+
+  <script type="module" src="/src/main.js"></script>
+
+  <!-- DFCF 本地终端 · 左侧任务栏（与主页那一套同一份版式）
+       双端口并行：DFCF 在 8766，全球眼在 5180，点一下同窗口跳过去。 -->
+  <nav id="dfcf-rail">
+    <div class="rail-brand">DFCF<span>终端</span></div>
+    <a href="http://127.0.0.1:8766/output/index.html">大盘总览</a>
+    <a href="http://127.0.0.1:8766/output/portfolio.html">自选与持仓</a>
+    <a href="http://127.0.0.1:8766/stock?code=600941">个股详情</a>
+    <a href="http://127.0.0.1:8766/strategy">资产配置桶</a>
+    <a href="http://127.0.0.1:8766/strategy">策略执行台</a>
+    <a class="on" href="#">全球眼</a>
+    <div class="rail-tip">相机遮罩与特效文字已关闭，只留地球与各层面板。</div>
+  </nav>
+  <a id="dfcf-return" href="http://127.0.0.1:8766/output/index.html" title="返回 DFCF 本地终端主页">◀ 返回 DFCF</a>
+</body>
+</html>

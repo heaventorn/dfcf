@@ -11,21 +11,21 @@
 输出：
     output/latest_market.json          原始采集数据
     output/history.db                  历史快照库（每轮一条，趋势/环比查询：python history.py）
-    output/index.html                  主页「3D 地球指挥台」= 中间 3D 地球
-                                       + 左侧「大A行情概况 + 深色可缩放行情图 / 新闻·日历」
-                                       + 右侧「我的持仓 + 我的自选 / 空中飞人指数」
+    output/index.html                  主页「大盘总览」：指标卡 + 满屏面板 + 左侧任务栏
+    output/portfolio.html              「自选与持仓」：持仓 / 资产桶 / 自选 / 风险检查
 
 主页通过本地静态服务访问：http://127.0.0.1:8766/output/index.html
-（走 http 而不是 file://：浏览器的 file:// 安全策略会拦截页面读取本地地球贴图，
-  表现为「国界/光点都在，但地球是黑球、只剩一圈亮边」。）
+（两页本身是纯静态 HTML，双击 file:// 也能看；走 http 主要是为了让「财经快讯」
+  的定时刷新和个股页的接口能用。）
 
 打开方式：优先用 Edge 的 --app 参数开一个「没有地址栏 / 标签栏」的独立窗口，看起来
 就是个本地应用；本机找不到 Edge 时自动退回系统默认浏览器。--no-open 可完全跳过。
 
-运行完会自动后台拉起两个常驻服务并打开主页：
-    8766  主页 + 实时新闻服务(live_server.py，每 5 分钟自动刷新全球新闻)
+运行完会自动后台拉起三个常驻服务并打开主页：
+    8766  大盘总览 + 自选持仓 + 实时新闻 + 个股接口(live_server.py，快讯每 5 分钟刷新)
     8765  持仓管理服务(position_manager.py)
-两个服务继承本进程的 console：关掉启动脚本窗口 / Ctrl+C 会一起退出，不留残余进程。
+    5180  全球眼 3D 地球(godseye/，先 vite build 再用 vite preview 静态托管)
+三个服务继承本进程的 console：关掉启动脚本窗口 / Ctrl+C 会一起退出，不留残余进程。
 """
 
 import argparse
@@ -126,21 +126,38 @@ def _record_history(data, use_login=True):
 
 
 def _build_home_page(data, airman_res, airman_refs):
-    """生成主页「3D 地球指挥台」（唯一产出页面）；失败返回 None。"""
+    """生成主页「大盘总览」+「自选与持仓」两页；失败返回 None。
+
+    两页都是纯静态 HTML（无地球、无 3D 库）：主页 output/index.html，
+    自选与持仓 output/portfolio.html。左侧任务栏在两者之间单击直达。
+    """
     try:
-        import events as globe_events
         import home as home_mod
-        evs = globe_events.fetch_events()   # 条数上限与时间窗由 config 决定
+        # 事件表只用来给「财经快讯」做一次初始填充；抓不到也照样出页面，
+        # 不能因为它把整个主页拖住（新版页面已经没有 3D 地球，不依赖事件）。
+        evs, window_days = [], 3
+        try:
+            import events as globe_events
+            evs = globe_events.fetch_events()   # 条数上限与时间窗由 config 决定
+            window_days = getattr(globe_events, "WINDOW_DAYS", 3)
+        except Exception as e:
+            print(f"[提示] 全球事件抓取未完成（{e}），快讯栏先用快照里的内容。")
         payload = home_mod.build_payload(
             data, events=evs, airman_res=airman_res, airman_refs=airman_refs,
             portfolio_data=data.get("portfolio"),
-            window_days=globe_events.WINDOW_DAYS,
+            window_days=window_days,
         )
         chart_data = home_mod.generate_chart_data()
         home_path = os.path.join(config.OUTPUT_DIR, "index.html")
         home_mod.build_home(evs, payload, home_path, assets_prefix="../assets/",
-                            chart_data=chart_data)
-        print("✓ 主页（3D 地球指挥台）已生成:", home_path)
+                            chart_data=chart_data, market=data)
+        print("✓ 主页（大盘总览）已生成:", home_path)
+        try:
+            assets_path = os.path.join(config.OUTPUT_DIR, "portfolio.html")
+            home_mod.build_assets(payload, assets_path, market=data)
+            print("✓ 自选与持仓页已生成:", assets_path)
+        except Exception as e:
+            print(f"[提示] 自选与持仓页生成未完成（{e}），主页不受影响。")
         return home_path
     except Exception as e:
         print(f"[提示] 主页生成未完成（{e}），可运行 python home.py --probe 排查。")
@@ -151,9 +168,9 @@ def _start_services():
     """后台拉起**一个**常驻服务进程，它同时托管 8766（主页 + 实时新闻 + 个股接口）
     与 8765（持仓管理）；返回主页服务是否就绪。
 
-    主页统一走 http 而不是 file://：浏览器的 file:// 安全策略会拦截页面读取
-    本地 8K 地球贴图（表现为「地球是黑球，只剩一圈亮边」）。
-    8766 使用 live_server.py：同一端口既发布静态主页，也提供 /api/news
+    两页本身双击就能看；统一走 http 是为了让 /api/news（财经快讯自动刷新）、
+    /api/stock（个股页）这些同源接口能用，不用处理跨源。
+    8766 使用 live_server.py：同一端口既发布静态页面，也提供 /api/news
     （前端按版本号轮询，后端每 config.NEWS_REFRESH_SECONDS 秒自动重抓新闻）。
 
     两个端口合并进同一个进程（--with-positions）是刻意的：以前分两个子进程，
@@ -166,6 +183,83 @@ def _start_services():
     except Exception as e:
         print(f"[提示] 主页/新闻服务自动启动失败（{e}），将退回 file:// 打开（地球贴图可能不显示）")
         return False
+
+
+def _start_godseye():
+    """后台拉起「全球眼」（God's Eye View，5180）：内嵌在 godseye/ 的 3D 地球指挥台。
+
+    它是 Node/Vite 的东西，不是 python 脚本，所以不能用 _start_bg。
+    和主服务一样**继承 console**：关掉启动脚本窗口 / Ctrl+C 会一起退出，不留孤儿进程。
+    Node 没装、依赖没装（godseye/node_modules 缺失）都只是打印提示，不影响 DFCF 主页。
+
+    走的是**生产构建 + preview 静态托管**，不是 `vite dev`：
+    开发服务器是按模块一个个下发的，一个页面要发 800 多个请求、40 多 MB；
+    构建后是合并压缩过的静态文件，同样一页 170 多个请求、不到 10 MB，
+    冷启动从十几秒缩到两秒左右 —— 这是之前「有点卡」的主因。
+    构建只要 5~6 秒，直接跟着启动脚本一起跑，保证 5180 上永远是当前代码。
+    """
+    import shutil
+    import socket
+    import subprocess
+    import time as _time
+
+    port = int(getattr(config, "GODSEYE_PORT", 5180))
+    gdir = getattr(config, "GODSEYE_DIR", "")
+    entry = getattr(config, "GODSEYE_ENTRY", "")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        if s.connect_ex(("127.0.0.1", port)) == 0:
+            print(f"✓ 全球眼已在运行: http://127.0.0.1:{port}")
+            return True
+
+    if not gdir or not os.path.isdir(gdir):
+        print("[提示] 未找到 godseye 目录，任务栏里的「全球眼」会打不开（其余功能正常）。")
+        return False
+    if not entry or not os.path.isfile(entry):
+        print("[提示] 全球眼依赖未安装：请在该目录执行 npm install 后再启动（其余功能正常）。")
+        return False
+    node = shutil.which("node") or shutil.which("node.exe")
+    if not node:
+        print("[提示] 未检测到 Node.js，「全球眼」无法启动（其余功能正常）。")
+        return False
+
+    env = dict(os.environ)
+    env["PORT"] = str(port)
+    env["HOST"] = "127.0.0.1"
+
+    # ---- 生产构建（约 5~6 秒；失败就退回开发服务器，不影响主页）----
+    built = False
+    try:
+        print("· 正在构建全球眼静态资源（约 6 秒，只需等一下）...")
+        rc = subprocess.run([node, entry, "build"], cwd=gdir, env=env).returncode
+        built = (rc == 0) and os.path.isfile(os.path.join(gdir, "dist", "index.html"))
+    except Exception as e:
+        print(f"[提示] 全球眼构建失败（{e}），改用开发服务器。")
+        built = False
+
+    if built:
+        cmd = [node, entry, "preview", "--port", str(port),
+               "--strictPort", "--host", "127.0.0.1"]
+    else:
+        cmd = [node, entry]          # 退回 vite dev（能跑，只是慢）
+
+    try:
+        subprocess.Popen(cmd, cwd=gdir, env=env)
+    except Exception as e:
+        print(f"[提示] 全球眼启动失败（{e}），其余功能正常。")
+        return False
+
+    for _ in range(40):
+        _time.sleep(0.5)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
+            s2.settimeout(0.5)
+            if s2.connect_ex(("127.0.0.1", port)) == 0:
+                mode = "生产构建" if built else "开发服务器"
+                print(f"✓ 全球眼已后台启动（{mode}）: http://127.0.0.1:{port}")
+                return True
+    print(f"[提示] 全球眼启动较慢，稍后可直接访问 http://127.0.0.1:{port}")
+    return False
 
 
 # Edge 的几种常见安装位置（64 位系统上也可能只装了 32 位那份）
@@ -294,6 +388,8 @@ def run(use_login=True, open_browser=True):
 
     # 6.1 / 6.2 常驻后台服务：8765 持仓管理 / 8766 主页 + 实时新闻(每 5 分钟刷新)
     serve_ok = _start_services()
+    # 6.3 全球眼（5180）：双端口并行 —— 左侧任务栏的「全球眼」同窗口跳过去
+    _start_godseye()
 
     # 7. 自动打开主页（--no-open 可跳过）
     if open_browser:
@@ -301,13 +397,17 @@ def run(use_login=True, open_browser=True):
 
     print()
     print("=" * 60)
-    print("  主页:", PAGE_URL)
-    print("  新闻:", "http://127.0.0.1:8766/api/news",
-          "（每 %d 秒自动刷新）" % getattr(config, "NEWS_REFRESH_SECONDS", 300))
-    print("  持仓/自选:", "http://127.0.0.1:8765", "（与主页同进程托管）")
+    print("  大盘总览:", PAGE_URL)
+    print("  自选与持仓:", "http://127.0.0.1:8766/output/portfolio.html")
+    print("  左侧任务栏:", "大盘总览 / 自选与持仓 / 个股详情 / 资产配置桶 / "
+          "策略执行台 / 全球眼 —— 点一下同窗口切换")
+    print("  财经快讯:", "每 %d 秒自动刷新" % getattr(config, "NEWS_REFRESH_SECONDS", 300))
+    print("  持仓/自选管理:", "http://127.0.0.1:8765", "（与主页同进程托管）")
     print("  策略执行台:", "http://127.0.0.1:8766/strategy",
           "（配置对照 / 买卖计划 / 回测 / 模型分析）")
-    print("  个股页:", "主页里点持仓/自选任意一行即可进入（Ctrl/中键可开新标签）")
+    print("  个股页:", "主页里点持仓/自选/涨幅榜任意一行即可进入（Ctrl/中键可开新标签）")
+    print("  全球眼:", getattr(config, "GODSEYE_URL", "http://127.0.0.1:5180/"),
+          "（3D 地球 / 左侧任务栏可一键跳转）")
     print("  文件:", home_path or "(生成失败,详见上方提示)")
     print("=" * 60)
 

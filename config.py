@@ -250,6 +250,18 @@ NEWS_POLL_SECONDS = 60
 # 实时新闻服务端口（与主页静态服务同端口：静态文件 + /api/news 同源）
 LIVE_PORT = 8766
 
+# ---- 全球眼（God's Eye View，内嵌在 godseye/ 目录）----
+# 双端口并行：8766 是 DFCF 自己的大盘总览/自选持仓/个股/新闻，5180 是这个 3D 地球。
+# 两边各自独立跑，互不阻塞；左侧任务栏的「全球眼」就是同窗口跳过去。
+# 它是 Vite（Node）项目，不是 python —— 需要机器上装了 Node 24+。
+# 启动方式见 main.py 的 _start_godseye：先 `vite build`，再用 `vite preview`
+# 托管 dist/（生产构建比 dev 快一个数量级），构建失败才退回开发服务器。
+GODSEYE_PORT = 5180
+GODSEYE_DIR = os.path.join(BASE_DIR, "godseye")
+GODSEYE_ENTRY = os.path.join(GODSEYE_DIR, "node_modules", "vite", "bin", "vite.js")
+# 主页标题栏跳转地址（同窗口跳转用）
+GODSEYE_URL = "http://127.0.0.1:%d/" % GODSEYE_PORT
+
 # ---- 个股终端（stock.py 数据层 / 后续的 stock 页与后台刷新）----
 # 刷新档位：盘口/现价 3.5 秒 —— 比新闻的 5 分钟高两个数量级，因此后台必须做
 # 「同一只票 X 秒内只打一次上游」的合并，否则多开几个标签页就把上游打爆。

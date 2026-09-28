@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DFCF · 全球事件壳（Cesium 样版）</title>
+<link rel="stylesheet" href="/cesium/Widgets/widgets.css" />
+<style>
+  /* 设计令牌与 DFCF 主页一致，保证两页看起来是同一个东西 */
+  :root{
+    --bg-0:#0a0e14; --bg-1:#111721; --bg-2:#18202c;
+    --line-1:#1b2430; --line-2:#28323f;
+    --fg-0:#e9eef6; --fg-1:#a9b5c6; --fg-2:#78879b; --fg-3:#556072;
+    --accent:#ff9f1c; --accent-dim:rgba(255,159,28,.14); --accent-line:rgba(255,159,28,.42);
+    --sev3:#ff4d8d; --sev2:#ffb340; --sev1:#4dd0e1;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:var(--bg-0); overflow:hidden; }
+  body{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",
+        "PingFang SC",sans-serif; color:var(--fg-0);
+        font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; }
+  #cesiumContainer{ position:absolute; inset:0; }
+  .cesium-viewer-bottom{ display:none !important; }
+  #credits{ position:absolute; left:514px; bottom:6px; z-index:30; font-size:10.5px;
+            color:var(--fg-3); }
+  #credits a{ color:var(--fg-2); }
+  body.news-off #credits{ left:190px; }
+
+  /* ---- 左侧任务栏：与原地球同一个入口列表，这一项高亮 ---- */
+  #rail{ position:fixed; left:0; top:0; bottom:0; width:174px; z-index:40;
+         background:linear-gradient(180deg,#0d1219,#0a0e14);
+         border-right:1px solid var(--line-1); padding:14px 0; }
+  #rail .brand{ padding:0 16px 14px; font-size:13px; font-weight:800; letter-spacing:.5px; }
+  #rail .brand span{ color:var(--accent); }
+  #rail a{ display:block; padding:11px 16px; font-size:13.5px; color:var(--fg-1);
+           text-decoration:none; border-left:3px solid transparent; }
+  #rail a:hover{ background:rgba(255,255,255,.03); color:var(--fg-0); }
+  #rail a.on{ background:var(--accent-dim); border-left-color:var(--accent); color:var(--accent);
+              font-weight:700; }
+  #rail .foot{ position:absolute; bottom:12px; left:16px; right:14px; font-size:10.5px;
+               line-height:1.6; color:var(--fg-3); }
+
+  /* ---- 顶部信息条 ---- */
+  #hud{ position:fixed; left:514px; right:0; top:0; z-index:35; padding:12px 18px 14px;
+        background:linear-gradient(180deg,rgba(10,14,20,.92),rgba(10,14,20,0));
+        pointer-events:none; }
+  #hud h1{ margin:0; font-size:14.5px; font-weight:800; letter-spacing:.3px; }
+  #hud .sub{ margin-top:4px; font-size:11.5px; color:var(--fg-2); }
+  #hud .stats{ position:absolute; right:18px; top:12px; display:flex; gap:10px; }
+  /* 版权那行太长就截断，永远只占一行，不许压到右边的统计条 */
+  #esriCredit{ max-width:720px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #hud .chip{ background:var(--bg-2); border:1px solid var(--line-2); border-radius:6px;
+              padding:4px 10px; font-size:11px; color:var(--fg-1); }
+  #hud .chip b{ color:var(--accent); font-weight:800; }
+
+  /* ---- 右下角相机读数：直接演示"现在是几米一个像素" ---- */
+  #readout{ position:fixed; right:14px; bottom:14px; z-index:35;
+            background:rgba(17,23,33,.88); border:1px solid var(--line-2); border-radius:8px;
+            padding:8px 12px; font-size:11.5px; color:var(--fg-1); line-height:1.75;
+            backdrop-filter:blur(4px); }
+  #readout b{ color:var(--fg-0); font-weight:700; }
+  #readout .hi{ color:var(--accent); }
+
+  /* ---- 严重度小徽标（右栏「国家新闻」表头用）---- */
+  .sev{ display:inline-block; padding:1px 7px; border-radius:4px; font-size:10.5px;
+        font-weight:700; margin-right:6px; }
+
+  #loading{ position:fixed; inset:0; z-index:60; display:flex; align-items:center;
+            justify-content:center; background:var(--bg-0); color:var(--fg-1); font-size:13px; }
+  #loading.off{ display:none; }
+  #loading .err{ max-width:560px; text-align:center; line-height:2; color:#ffb340; }
+
+  /* ---- 左侧任务栏底部：工具开关 ---- */
+  #rail .tools{ margin-top:10px; padding-top:6px; border-top:1px solid var(--line-1); }
+  #rail .st{ float:right; font-size:10px; font-weight:700; color:var(--fg-3); }
+  #rail a.on .st, #rail a.tool:hover .st{ color:var(--accent); }
+
+  /* ---- 左栏「所有新闻」：常驻，和主看板同一份数据（8766 /api/news）---- */
+  #news{ position:fixed; left:174px; top:0; bottom:0; width:340px; z-index:38;
+         background:linear-gradient(180deg,rgba(13,18,25,.96),rgba(10,14,20,.985));
+         border-right:1px solid var(--line-1); display:flex; flex-direction:column; }
+  body.news-off #news{ display:none; }
+  body.news-off #hud{ left:174px; }
+
+  /* ---- 右栏「国家新闻」：点地球上的国家 / 光点才滑出来 ---- */
+  #place{ position:fixed; right:0; top:0; bottom:0; width:380px; z-index:39;
+          background:linear-gradient(180deg,rgba(13,18,25,.97),rgba(10,14,20,.99));
+          border-left:1px solid var(--line-1); transform:translateX(100%);
+          transition:transform .22s ease; display:flex; flex-direction:column; }
+  #place.on{ transform:translateX(0); box-shadow:-14px 0 34px rgba(0,0,0,.45); }
+
+  /* 两栏共用的表头与列表行 */
+  #news .nh, #place .nh{ display:flex; align-items:center; gap:8px; padding:11px 12px;
+                         border-bottom:1px solid var(--line-1); }
+  #news .nh .t, #place .nh .t{ font-size:13px; font-weight:800; flex:none; }
+  #news .nh .s, #place .nh .s{ flex:1; font-size:10.5px; color:var(--fg-3); text-align:right;
+                               overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #place .nh .x{ cursor:pointer; color:var(--fg-2); font-size:12px; padding:2px 6px;
+                 border-radius:4px; flex:none; }
+  #place .nh .x:hover{ color:var(--fg-0); background:rgba(255,255,255,.06); }
+  #news .nb, #place .nb{ flex:1; overflow-y:auto; padding:4px 12px 16px; }
+  #news .nrow, #place .nrow{ display:grid; grid-template-columns:42px 7px 1fr 20px; gap:7px;
+                             align-items:baseline; padding:5px 0;
+                             border-bottom:1px solid rgba(27,36,48,.7); }
+  #news .ntime, #place .ntime{ color:var(--fg-3); font-size:11px; }
+  #news .nd, #place .nd{ width:7px; height:7px; border-radius:50%; align-self:center; }
+  #news .nt, #place .nt{ color:var(--fg-1); font-size:12px; line-height:1.5; text-decoration:none; }
+  #news a.nt:hover, #place a.nt:hover{ color:var(--fg-0); text-decoration:underline; }
+  #news .nloc, #place .nloc{ cursor:pointer; color:var(--fg-3); font-size:11px; text-align:center; }
+  #news .nloc:hover, #place .nloc:hover{ color:var(--accent); }
+  #news .nloc.off, #place .nloc.off{ visibility:hidden; }
+  #news .nempty, #place .nempty{ color:var(--fg-3); font-size:12px; padding:14px 2px; line-height:1.85; }
+
+  /* 右栏打开时，把右上角那些悬浮元素整体让开 */
+  body.place-open #hud{ right:380px; }
+  body.place-open #readout{ right:394px; }
+  body.place-open #credits{ right:394px; }
+</style>
+</head>
+<body>
+
+<div id="cesiumContainer"></div>
+
+<nav id="rail">
+  <div class="brand">DFCF <span>终端</span></div>
+  <a href="http://127.0.0.1:8766/output/index.html">大盘总览</a>
+  <a href="http://127.0.0.1:8766/output/portfolio.html">自选与持仓</a>
+  <a href="http://127.0.0.1:8766/stock?code=600941">个股详情</a>
+  <a href="http://127.0.0.1:8766/strategy">资产配置桶</a>
+  <a href="http://127.0.0.1:8766/strategy">策略执行台</a>
+  <a href="/" class="on">全球眼</a>
+  <div class="tools">
+    <a href="javascript:void 0" class="tool" id="newsToggle" title="展开 / 收起左侧「所有新闻」">所有新闻 <span class="st" id="newsSt">–</span></a>
+  </div>
+  <div class="foot">左「所有新闻」· 点国家看右栏「该国新闻」<br />其余入口走 DFCF 主服务 8766</div>
+</nav>
+
+<header id="hud">
+  <h1>全球宏观事件 · 全球眼</h1>
+  <div class="sub" id="asOf">加载中…</div>
+  <div class="sub" id="esriCredit" style="font-size:10.5px;color:var(--fg-3)">
+    影像 Powered by Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community
+  </div>
+  <div class="stats">
+    <div class="chip">事件 <b id="nEvents">–</b></div>
+    <div class="chip">地点 <b id="nGroups">–</b></div>
+    <div class="chip">事件柱 <b id="nPillars">–</b></div>
+    <div class="chip">脉冲环 <b id="nRings">–</b></div>
+    <div class="chip">有热度国家 <b id="nCountries">–</b></div>
+    <div class="chip">弧线 <b id="nArcs">–</b></div>
+  </div>
+</header>
+
+<div id="readout">
+  视高 <b id="roAlt">–</b><br />
+  地表约 <b class="hi" id="roMpp">–</b>/像素<br />
+  瓦片级 <b id="roLevel">–</b>
+</div>
+
+<!-- 左栏：所有新闻（常驻，和主看板「财经快讯」同一个数据源） -->
+<aside id="news">
+  <div class="nh">
+    <div class="t">所有新闻</div>
+    <div class="s" id="newsSrc">—</div>
+  </div>
+  <div class="nb" id="newsBody"><div class="nempty">正在加载快讯…</div></div>
+</aside>
+
+<!-- 右栏：点地球上的国家 / 光点后，显示那个地方的新闻 -->
+<aside id="place">
+  <div class="nh">
+    <div class="t" id="placeTitle">国家新闻</div>
+    <div class="s" id="placeMeta"></div>
+    <div class="x" id="placeClose" title="收起">✕</div>
+  </div>
+  <div class="nb" id="placeBody">
+    <div class="nempty">点地球上的某个国家（或事件光点），这里就显示那个地方的新闻。</div>
+  </div>
+</aside>
+
+<div id="credits"></div>
+
+<div id="loading"><div id="loadingText">正在装载瓦片地球…</div></div>
+
+<script src="/cesium/Cesium.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var loading = $('loading');
+  function fail(msg) {
+    loading.classList.remove('off');
+    $('loadingText').innerHTML = '<div class="err">' + msg + '</div>';
+  }
+  if (!window.Cesium) { fail('Cesium 没加载起来。<br>确认 godseye/public/cesium/Cesium.js 是否还在。'); return; }
+
+  // 事件严重度配色：与 events.py 的 colorOf() 完全一致
+  // （刻意避开红/绿，那两色在 A 股语境里已被涨跌占用）
+  function colorOf(sev) {
+    return sev >= 3 ? '#ff4d8d' : (sev === 2 ? '#ffb340' : '#4dd0e1');
+  }
+  function cesiumColor(hex, alpha) {
+    return Cesium.Color.fromCssColorString(hex).withAlpha(alpha === undefined ? 1 : alpha);
+  }
+  // 高度（米）：越高＝影响越大 / 同城事件越多，对应原地球的 pointAltitude
+  function pillarHeight(g) {
+    if (g.sev < 2 && g.count <= 1) return 0;
+    return 40000 + g.sev * 35000 + Math.min(120000, (g.count - 1) * 7000);
+  }
+  function heatLevel(h) {
+    var base = h.sev >= 3 ? 0.62 : (h.sev === 2 ? 0.34 : 0.16);
+    return Math.min(1, base + Math.min(0.3, Math.max(0, h.count - 1) * 0.035));
+  }
+
+  /**
+   * 把"哪些国家有多热"画成一张 4096×2048 的透明贴图（等距圆柱投影，正好铺满整颗地球），
+   * 返回 data URL，交给 SingleTileImageryProvider 当一层影像用。
+   * 顺带做了一点羽化，让它看起来像热力而不是硬边色块。
+   */
+  function buildHeatTexture(world, heat) {
+    var W = 4096, H = 2048;
+    var cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    var ctx = cv.getContext('2d');
+    var drawn = 0;
+
+    (world.features || []).forEach(function (f) {
+      var nm = f.properties && f.properties.name;
+      var h = nm ? heat[nm] : null;
+      if (!h) return;
+      var g = f.geometry || {}, co = g.coordinates || [];
+      var polys = g.type === 'Polygon' ? [co] : (g.type === 'MultiPolygon' ? co : []);
+      if (!polys.length) return;
+
+      var lv = heatLevel(h);
+      var color = lv > 0.6 ? '#ff4d8d' : (lv > 0.3 ? '#ffb340' : '#4dd0e1');
+      ctx.beginPath();
+      polys.forEach(function (poly) {
+        (poly || []).forEach(function (ring) {
+          for (var i = 0; i < ring.length; i++) {
+            var x = (ring[i][0] + 180) / 360 * W;
+            var y = (90 - ring[i][1]) / 180 * H;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          }
+          ctx.closePath();
+        });
+      });
+      // 先来一遍模糊的当辉光，再来一遍实的当主体。
+      // 两层叠起来最终不透明度大约 0.10~0.18：看得出热度，又不至于把卫星图糊住。
+      ctx.globalAlpha = 0.02 + lv * 0.04;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.fill('evenodd');
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 0.025 + lv * 0.08;
+      ctx.fill('evenodd');
+      drawn++;
+    });
+    ctx.globalAlpha = 1;
+    cv.__drawn = drawn;
+    return cv.toDataURL('image/png');
+  }
+
+  /** 点是否在一条环里（射线法） */
+  function pointInRing(lng, lat, ring) {
+    var inside = false;
+    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      var xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+      if (((yi > lat) !== (yj > lat)) &&
+          (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+
+  /** 经纬度落在哪个国家里（用来支持"点国家看汇总"） */
+  function countryAt(world, lng, lat) {
+    var fs = world.features || [];
+    for (var i = 0; i < fs.length; i++) {
+      var f = fs[i], g = f.geometry || {};
+      var polys = g.type === 'Polygon' ? [g.coordinates] : (g.type === 'MultiPolygon' ? g.coordinates : []);
+      for (var p = 0; p < polys.length; p++) {
+        var poly = polys[p] || [];
+        if (!poly.length || !pointInRing(lng, lat, poly[0])) continue;
+        var inHole = false;
+        for (var q = 1; q < poly.length; q++) {
+          if (pointInRing(lng, lat, poly[q])) { inHole = true; break; }
+        }
+        if (!inHole) return (f.properties && f.properties.name) || null;
+      }
+    }
+    return null;
+  }
+
+  function boot() {
+    var viewer = new Cesium.Viewer('cesiumContainer', {
+      baseLayer: false,
+      animation: false, timeline: false, baseLayerPicker: false, geocoder: false,
+      homeButton: false, sceneModePicker: false, navigationHelpButton: false,
+      fullscreenButton: false, vrButton: false, selectionIndicator: false,
+      infoBox: false,
+      creditContainer: $('credits'),
+      msaaSamples: 4,
+      contextOptions: { webgl: { preserveDrawingBuffer: true } }
+    });
+
+    // 关掉自带的地表底色，换成深海蓝；星空与大气保留
+    viewer.scene.globe.baseColor = cesiumColor('#050a12');
+    viewer.scene.backgroundColor = cesiumColor('#01030a');
+    viewer.scene.skyAtmosphere.show = true;
+    viewer.scene.skyAtmosphere.atmosphereLightIntensity = 18;
+    viewer.scene.skyAtmosphere.saturationShift = -0.12;
+    viewer.scene.skyAtmosphere.brightnessShift = -0.08;
+    // 关掉地球自带的经纬网/雾，画面更干净
+    viewer.scene.fog.enabled = false;
+
+    // 方便调试/二次开发：控制台里可以直接用 __dfcfViewer 摸到场景
+    window.__dfcfViewer = viewer;
+
+    // ---- 1) 地球本体：Esri 卫星瓦片（就是全球眼那一路）----
+    return Cesium.ArcGisMapServerImageryProvider.fromUrl(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer',
+      {
+        credit: 'Powered by Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+        enablePickFeatures: false
+      }
+    ).then(function (provider) {
+      viewer.imageryLayers.addImageryProvider(provider);
+      return fetch('/dfcf-sample/events.json').then(function (r) { return r.json(); });
+    }).then(function (data) {
+      // 国界 GeoJSON：铺一层国界折线，也把国家热度烤成一张贴图。
+      // 外加「英文国名 → 中文国名」对照表：底图国名是英文（Vietnam），新闻里的 country
+      // 字段是中文（越南）；点国家要按国名筛新闻，两边必须靠它对上号。
+      return Promise.all([
+        fetch('/dfcf-sample/countries.geojson').then(function (r) { return r.json(); }),
+        fetch('/dfcf-sample/country_zh.json').then(function (r) { return r.json(); })
+          .catch(function () { return {}; })
+      ]).then(function (a) {
+        return { data: data, countries: a[0], zh: a[1] || {} };
+      });
+    }).then(function (bundle) {
+      var data = bundle.data, world = bundle.countries, zhMap = bundle.zh || {};
+      function zhName(en) { return zhMap[en] || en; }
+
+      // ---- 2) 壳·国家热度 ----
+      // 做法：把"哪个国家有多热"先画成一张 4096×2048 的透明贴图，再当成一层影像叠在地球上。
+      // 为什么不用"给国家多边形填色"那种写法：多边形是实心几何，和地球表面共面时会被深度
+      // 测试整片吃掉（或者在不支持贴地分类的显卡上变成一块硬边色板），而且几十个国家就是
+      // 几十个 draw call。走影像层则和底图是同一条渲染通路，稳定、便宜、边界还能自然羽化。
+      var heat = data.heat || {};
+      var heatLayer = viewer.imageryLayers.addImageryProvider(
+        new Cesium.SingleTileImageryProvider({
+          url: buildHeatTexture(world, heat),
+          rectangle: Cesium.Rectangle.fromDegrees(-180, -90, 180, 90)
+        })
+      );
+      heatLayer.alpha = 1;
+
+      // ---- 3) 壳·国界描边：细折线，贴着地表画一圈 ----
+      var borderRings = [];
+      (world.features || []).forEach(function (f) {
+        var g = f.geometry || {}, co = g.coordinates || [];
+        var polys = g.type === 'Polygon' ? [co] : (g.type === 'MultiPolygon' ? co : []);
+        polys.forEach(function (poly) {
+          (poly || []).forEach(function (ring) {
+            if (ring && ring.length > 3) borderRings.push(ring);
+          });
+        });
+      });
+      borderRings.forEach(function (ring) {
+        var flat = [];
+        for (var i = 0; i < ring.length; i++) flat.push(ring[i][0], ring[i][1]);
+        viewer.entities.add({
+          polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArray(flat),
+            width: 1,
+            clampToGround: false,
+            material: new Cesium.PolylineOutlineMaterialProperty({
+              color: cesiumColor('#8fb6ff', 0.34),
+              outlineWidth: 0,
+              outlineColor: Cesium.Color.TRANSPARENT
+            })
+          }
+        });
+      });
+
+      var groups = (data.groups || []).filter(function (g) {
+        return g.lat != null && g.lng != null;
+      });
+
+      // ---- 3) 壳·事件柱：地面 → 高空的一根柱子 + 顶部光点 ----
+      var nPillars = 0;
+      groups.forEach(function (g) {
+        var col = cesiumColor(colorOf(g.sev));
+        var h = pillarHeight(g);
+        var lifted = h > 0;
+
+        if (lifted) {
+          var ent = viewer.entities.add({
+            polyline: {
+              positions: [
+                Cesium.Cartesian3.fromDegrees(g.lng, g.lat, 0),
+                Cesium.Cartesian3.fromDegrees(g.lng, g.lat, h)
+              ],
+              width: 2,
+              material: new Cesium.PolylineGlowMaterialProperty({
+                glowPower: 0.22, color: col.withAlpha(0.85)
+              })
+            },
+            point: {
+              pixelSize: 9,
+              color: col,
+              outlineColor: Cesium.Color.WHITE.withAlpha(0.75),
+              outlineWidth: 1.2
+            },
+            position: Cesium.Cartesian3.fromDegrees(g.lng, g.lat, h)
+          });
+          ent.dfcfGroup = g;
+          nPillars++;
+        } else {
+          var ent2 = viewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(g.lng, g.lat, 0),
+            point: {
+              pixelSize: 5,
+              color: col.withAlpha(0.85),
+              outlineColor: col.withAlpha(0.35),
+              outlineWidth: 2
+            }
+          });
+          ent2.dfcfGroup = g;
+        }
+      });
+
+      // ---- 4) 壳·脉冲光环：只在"高影响 / 多事件"的地点往外扩散 ----
+      // 只动 outline 的透明度，不动几何，避免每帧重建图元
+      var pulsing = groups.filter(function (g) { return g.sev >= 2 || g.count > 1; });
+      var nRings = 0;
+      pulsing.forEach(function (g) {
+        var base = colorOf(g.sev);
+        var maxR = 90000 + g.count * 4000 + g.sev * 12000;
+        var phase = (g.lat * 7 + g.lng * 3) % 1;   // 用坐标错开相位，免得所有环同时亮
+        var period = 2600;
+        var ring = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(g.lng, g.lat, 1500),
+          ellipse: {
+            semiMajorAxis: maxR,
+            semiMinorAxis: maxR,
+            fill: false,
+            outline: true,
+            outlineWidth: 2.5,
+            outlineColor: new Cesium.CallbackProperty(function () {
+              var t = ((Date.now() / period) + phase) % 1;
+              return cesiumColor(base, 0.75 * (1 - t));
+            }, false)
+          }
+        });
+        ring.dfcfGroup = g;
+        nRings++;
+      });
+
+      // ---- 5) 壳·热点弧线：大圆插值 + 中段抬起，做出"贴球飞过"的观感 ----
+      var patterns = [255, 510, 1020, 2040, 4080, 8160, 16320, 32640, 65280, 130560, 261120, 522240];
+      (data.arcs || []).forEach(function (a, idx) {
+        var col = cesiumColor(colorOf(a.sev));
+        var span = Cesium.Cartesian3.distance(
+          Cesium.Cartesian3.fromDegrees(a.startLng, a.startLat, 0),
+          Cesium.Cartesian3.fromDegrees(a.endLng, a.endLat, 0)
+        );
+        var lift = Math.min(900000, span * 0.22);
+        viewer.entities.add({
+          polyline: {
+            positions: greatCircleArc(a, lift, 72),
+            width: 2,
+            material: new Cesium.PolylineDashMaterialProperty({
+              color: col.withAlpha(0.9),
+              dashLength: 26,
+              dashPattern: new Cesium.CallbackProperty(function () {
+                return patterns[Math.floor(Date.now() / 110 + idx) % patterns.length];
+              }, false)
+            })
+          }
+        });
+      });
+
+      // ---- 6) 初始机位 + 相机巡游（鼠标接管后 8 秒自动续上）----
+      // 默认全球视角；想直接落到某个城市，用网址参数：
+      //   ?lat=31.2&lng=121.5&h=1200000        高度单位是米，不写就全球
+      //   ?...&pitch=-35                       俯仰角，-90 是正下方，越接近 0 越平视
+      var qs = {};
+      location.search.replace(/[?&]([^=&]+)=([^&]*)/g, function (_, k, v) {
+        qs[decodeURIComponent(k)] = decodeURIComponent(v); return _;
+      });
+      var vLat = parseFloat(qs.lat), vLng = parseFloat(qs.lng), vH = parseFloat(qs.h);
+      var vPitch = parseFloat(qs.pitch);
+      var pitchDeg = isFinite(vPitch) ? vPitch : (isFinite(vH) && vH < 6000000 ? -74 : -90);
+      viewer.camera.setView({
+        destination: (isFinite(vLat) && isFinite(vLng) && isFinite(vH))
+          ? Cesium.Cartesian3.fromDegrees(vLng, vLat, vH)
+          : Cesium.Cartesian3.fromDegrees(20, 18, 20500000),
+        orientation: {
+          heading: 0,
+          pitch: Cesium.Math.toRadians(Math.max(-90, Math.min(0, pitchDeg))),
+          roll: 0
+        }
+      });
+
+      var tour = groups.slice().sort(function (a, b) {
+        return (b.sev * 10 + b.count) - (a.sev * 10 + a.count);
+      }).slice(0, 12);
+      // ?tour=0 关掉相机巡游，方便停在全景慢慢看（截图/讲解用）
+      var tourOn = !/[?&]tour=(0|off|no)\b/.test(location.search);
+      // 巡游只在「全球远景」里跑。视高一旦低于 1500km，就说明你在往近处看（放大到
+      // 某个国家、城市甚至街区），这时候绝对不许再抢镜头；等你撤回到全球视角、
+      // 而且手停超过 20 秒，巡游才会接着走。
+      // 老毛病就出在这：以前是到点就无条件 flyTo 回 2400km，所以在街区级别看楼的时候，
+      // 相机每隔几秒被拽走一次 —— 就是你说的「自动回正到其他地方」。
+      var TOUR_MIN_ALT = 1500000;   // 米。巡游自己落到 2400km，所以这个闸门要低于它
+      var TOUR_IDLE_MS = 20000;
+      var ti = 0, timer = null, resume = null;
+
+      function atGlobalView() {
+        var h = viewer.camera.positionCartographic.height;
+        return isFinite(h) && h >= TOUR_MIN_ALT;
+      }
+      function stopTour() { if (timer) { clearInterval(timer); timer = null; } }
+      function step() {
+        if (!tour.length || !atGlobalView()) { stopTour(); return; }
+        var g = tour[ti % tour.length];
+        ti++;
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(g.lng, g.lat, 2400000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-74), roll: 0 },
+          duration: 2.6
+        });
+      }
+      function play() {
+        if (timer || !tourOn) return;
+        if (!atGlobalView()) return;      // 近景里绝不复活巡游
+        step();
+        timer = setInterval(step, 5600);
+      }
+      function noteInteraction() {
+        stopTour();
+        if (resume) { clearTimeout(resume); resume = null; }
+        resume = setTimeout(play, TOUR_IDLE_MS);
+      }
+      var cv = viewer.scene.canvas;
+      // 只认「在地球画布上动手」：滚轮缩放、按住拖拽、双击、双指缩放。
+      // 老版本把 pointerup 挂在 window 上，任何地方松一下鼠标都会重新计时（点左侧菜单、
+      // 拖面板滚动条都算），8 秒后照样来抢镜头。
+      cv.addEventListener('pointerdown', noteInteraction);
+      cv.addEventListener('wheel', noteInteraction, { passive: true });
+      cv.addEventListener('dblclick', noteInteraction);
+      cv.addEventListener('touchmove', noteInteraction, { passive: true });
+      play();
+
+      // ---- 7) 点击拾取：光点 → 该城市新闻；空白处 → 落在哪个国家就看该国新闻 ----
+      // 结果都送进右栏「国家新闻」，不再弹小卡片。
+      var handler = new Cesium.ScreenSpaceEventHandler(cv);
+      handler.setInputAction(function (movement) {
+        var picked = viewer.scene.pick(movement.position);
+        if (Cesium.defined(picked) && picked.id && picked.id.dfcfGroup) {
+          var g = picked.id.dfcfGroup;
+          openPlace({ country: g.country, city: g.city, sev: g.sev, count: g.count });
+          return;
+        }
+        // 没点到光点：把屏幕点反投影回经纬度，自己判断落在哪个国家
+        var cart = viewer.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid);
+        if (!cart) { closePlace(); return; }
+        var c = Cesium.Cartographic.fromCartesian(cart);
+        var en = countryAt(world, Cesium.Math.toDegrees(c.longitude),
+                           Cesium.Math.toDegrees(c.latitude));
+        if (!en) { closePlace(); return; }
+        var hh = heat[en];
+        openPlace({ country: zhName(en), en: en, sev: hh ? hh.sev : 0,
+                    count: hh ? hh.count : 0 });
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+      // ---- 8) 右下角读数：直接把"清晰度"量给你看 ----
+      var roAlt = $('roAlt'), roMpp = $('roMpp'), roLevel = $('roLevel');
+      viewer.scene.postRender.addEventListener(function () {
+        var carto = viewer.camera.positionCartographic;
+        var alt = carto.height;
+        if (!isFinite(alt) || alt < 0) return;
+        var fovy = viewer.camera.frustum.fovy || Cesium.Math.toRadians(60);
+        var groundWidth = 2 * alt * Math.tan(fovy / 2);
+        var mpp = groundWidth / viewer.scene.canvas.clientHeight;
+        roAlt.textContent = alt > 1e6
+          ? (alt / 1e6).toFixed(1) + ' 千公里'
+          : Math.round(alt / 1000) + ' 公里';
+        roMpp.textContent = mpp >= 1000 ? (mpp / 1000).toFixed(1) + ' 公里' : mpp.toFixed(1) + ' 米';
+        // 24 级 Esri 金字塔：每级 156543.03 m/px / 2^z
+        var z = Math.round(Math.log2(156543.033928 / Math.max(mpp, 1e-6)));
+        roLevel.textContent = 'L' + Math.max(0, Math.min(23, z)) + ' / L23';
+      });
+
+      // ---- 9) 顶部统计 ----
+      $('asOf').textContent = '数据时间 ' + data.asof + ' · ' + data.window +
+        ' 重要财经事件（东财/见闻/财联社/金十/同花顺/新浪）';
+      $('nEvents').textContent = data.counts.events;
+      $('nGroups').textContent = data.counts.groups;
+      $('nPillars').textContent = nPillars;
+      $('nRings').textContent = nRings;
+      $('nCountries').textContent = data.counts.countries;
+      $('nArcs').textContent = (data.arcs || []).length;
+
+      // ---- 10) 新闻两栏 ----
+      //   左栏「所有新闻」：常驻，数据源和主看板那个「财经快讯」面板一模一样（8766 /api/news）
+      //   右栏「国家新闻」：点地球上的国家 / 光点，显示落在那儿的新闻
+      // 8766 没在跑也不留白：退回页面自带的事件表，至少把标题给你看。
+      var NEWS_API = 'http://127.0.0.1:8766/api/news';
+      var NEWS_POLL_MS = 60000;
+      var newsBody = $('newsBody'), newsSrcEl = $('newsSrc'), newsStEl = $('newsSt'),
+          placeEl = $('place'), placeBody = $('placeBody'), placeTitleEl = $('placeTitle'),
+          placeMetaEl = $('placeMeta');
+      var newsVer = -1, newsTimer = null, newsAll = [], placeSel = null;
+
+      function hhmm(t) {
+        var m = /(\d{1,2}:\d{2})/.exec(String(t == null ? '' : t));
+        return m ? m[1] : String(t == null ? '' : t).slice(-5);
+      }
+      // 一行新闻：时间 / 严重度圆点 / 标题（点开原文）/ ◎（在地球上定位）
+      function rowsHtml(list) {
+        var html = '';
+        for (var i = 0; i < list.length; i++) {
+          var e = list[i];
+          var hasLoc = isFinite(e.lat) && isFinite(e.lng);
+          var title = e.url
+            ? '<a class="nt" href="' + esc(e.url) + '" target="_blank" rel="noreferrer noopener">' +
+              esc(e.title) + '</a>'
+            : '<span class="nt">' + esc(e.title) + '</span>';
+          html += '<div class="nrow">' +
+            '<span class="ntime">' + esc(hhmm(e.time)) + '</span>' +
+            '<span class="nd" style="background:' + colorOf(e.sev) + '"></span>' +
+            title +
+            '<span class="nloc' + (hasLoc ? '' : ' off') + '" data-i="' + i +
+            '" title="在地球上定位">◎</span>' +
+            '</div>';
+        }
+        return html;
+      }
+      // 每行的 ◎ 单独绑事件：点了就把地球飞过去，并在右栏摊开那个地方的新闻
+      function bindLocate(box, list) {
+        var btns = box.querySelectorAll('.nloc');
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].addEventListener('click', function () {
+            var e = list[parseInt(this.getAttribute('data-i'), 10)];
+            if (e) flyToEvent(e);
+          });
+        }
+      }
+      function renderNews(list, asof) {
+        newsAll = list || [];
+        if (newsAll.length) {
+          newsBody.innerHTML = rowsHtml(newsAll);
+          bindLocate(newsBody, newsAll);
+        } else {
+          newsBody.innerHTML = '<div class="nempty">这会儿没有快讯。</div>';
+        }
+        newsStEl.textContent = newsAll.length;
+        newsSrcEl.textContent = asof ? ('更新 ' + asof) : '';
+        newsSrcEl.title = '来源：DFCF 主服务 8766 /api/news';
+        if (placeSel) renderPlace();          // 右栏跟着一起刷新
+      }
+      // 国名匹配：点「中国」时，把「中国香港 / 中国台湾」这类也一并带进来
+      function inCountry(e, zh) {
+        var c = String(e.country || '');
+        return c === zh || (zh === '中国' && c.indexOf('中国') === 0);
+      }
+      function renderPlace() {
+        var sel = placeSel;
+        if (!sel) return;
+        var pool = [], loose = false;         // loose=城市级没条目，退到国家级
+        if (sel.city) pool = newsAll.filter(function (e) { return e.city === sel.city; });
+        if (!pool.length && sel.country) {
+          pool = newsAll.filter(function (e) { return inCountry(e, sel.country); });
+          loose = !!sel.city;
+        }
+        var name = (loose || !sel.city)
+          ? (sel.country || sel.en || '该地')
+          : [sel.country, sel.city].filter(Boolean).join(' · ');
+        placeTitleEl.textContent = '📌 ' + name;
+        placeMetaEl.innerHTML = (sel.sev ? sevBadge(sel.sev) : '') + pool.length + ' 条';
+        if (!pool.length) {
+          placeBody.innerHTML = '<div class="nempty">地球上这个位置现在没有我们的快讯。' +
+            '<br>左边「所有新闻」是全部条目，这里只挑落在 ' + esc(name) + ' 的。</div>';
+          return;
+        }
+        placeBody.innerHTML = rowsHtml(pool);
+        bindLocate(placeBody, pool);
+      }
+      function openPlace(sel) {
+        placeSel = sel || null;
+        placeEl.classList.toggle('on', !!placeSel);
+        document.body.classList.toggle('place-open', !!placeSel);
+        if (!placeSel) return;
+        renderPlace();
+        placeBody.scrollTop = 0;
+      }
+      function closePlace() { openPlace(null); }
+      function flyToEvent(e) {
+        if (!isFinite(e.lat) || !isFinite(e.lng)) return;
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(e.lng, e.lat, 900000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-70), roll: 0 },
+          duration: 1.8
+        });
+        // 顺手把右栏切到这条快讯所在地
+        openPlace({ country: e.country || '', city: e.city || '', sev: e.sev,
+                    en: e.city || e.country || '' });
+      }
+      function fetchNews() {
+        fetch(NEWS_API + (newsVer >= 0 ? ('?ver=' + newsVer) : ''), { cache: 'no-store' })
+          .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function (d) {
+            // 版本没变就别重画，免得你看一半被刷新打断
+            if (d && d.unchanged) { newsSrcEl.textContent = '已是最新'; return; }
+            if (d && typeof d.version === 'number') newsVer = d.version;
+            renderNews((d && d.events) || [], d && d.asof);
+          })
+          .catch(function () { fallbackNews(); });
+      }
+      function fallbackNews() {
+        // 8766 没起来时用页面自带的事件表兜底（全部条目，别截断，不然点国家容易一片空）
+        var list = (data.events || []).slice().sort(function (a, b) {
+          return String(b.time).localeCompare(String(a.time));
+        });
+        if (list.length) {
+          renderNews(list, data.asof);
+          newsSrcEl.textContent = '页面自带 · 8766 未启动';
+        } else {
+          newsBody.innerHTML = '<div class="nempty">现在读不到快讯：DFCF 主服务（8766）' +
+            '没在跑，页面也没带事件表。</div>';
+          newsStEl.textContent = '×';
+        }
+      }
+      function setNewsOpen(on) {
+        document.body.classList.toggle('news-off', !on);
+        try { localStorage.setItem('dfcf.news.open', on ? '1' : '0'); } catch (err) {}
+      }
+      $('newsToggle').onclick = function () {
+        setNewsOpen(document.body.classList.contains('news-off'));
+      };
+      $('placeClose').onclick = closePlace;
+      document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') closePlace();
+      });
+      var newsWantOpen = true;
+      try { newsWantOpen = localStorage.getItem('dfcf.news.open') !== '0'; } catch (err) {}
+      setNewsOpen(newsWantOpen);
+      fetchNews();                                  // 先拉一次，把左栏和菜单条数点亮
+      newsTimer = setInterval(fetchNews, NEWS_POLL_MS);
+
+      loading.classList.add('off');
+      window.__dfcfViewer = viewer;   // 调试/自检用：控制台里可以直接拿相机
+      window.__dfcfShellReady = {
+        groups: groups.length,
+        pillars: nPillars,
+        rings: nRings,
+        arcs: (data.arcs || []).length,
+        countries: Object.keys(heat).length,
+        borders: borderRings.length,
+        heatLayer: viewer.imageryLayers.length
+      };
+    });
+  }
+
+  /** 大圆插值：归一化线性插值在球面上就是大圆，再按正弦抬起中段。 */
+  function greatCircleArc(a, lift, steps) {
+    var A = Cesium.Cartesian3.fromDegrees(a.startLng, a.startLat, 0);
+    var B = Cesium.Cartesian3.fromDegrees(a.endLng, a.endLat, 0);
+    var R = Cesium.Ellipsoid.WGS84.maximumRadius;
+    var out = [];
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var p = Cesium.Cartesian3.lerp(A, B, t, new Cesium.Cartesian3());
+      Cesium.Cartesian3.normalize(p, p);
+      Cesium.Cartesian3.multiplyByScalar(p, R + Math.sin(Math.PI * t) * lift, p);
+      out.push(p);
+    }
+    return out;
+  }
+
+  function sevBadge(sev) {
+    var c = colorOf(sev);
+    return '<span class="sev" style="background:' + c + '22;color:' + c +
+      ';border:1px solid ' + c + '66">' + (sev >= 3 ? '高影响' : (sev === 2 ? '中影响' : '普通')) +
+      '</span>';
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (m) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m];
+    });
+  }
+  // 点国家 / 点光点的结果统一走右栏「国家新闻」，不再弹小卡片。
+  boot().catch(function (e) {
+    fail('装载失败：' + (e && e.message ? e.message : e) +
+      '<br><br>常见原因：网络取不到 Esri 瓦片，或 /dfcf-sample/events.json 不存在。');
+  });
+})();
+</script>
+</body>
+</html>
